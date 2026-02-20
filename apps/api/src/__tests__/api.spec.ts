@@ -93,4 +93,46 @@ describe("api routes", () => {
 
     expect(deleteResponse.statusCode).toBe(204);
   });
+
+  it("queues crawl ingestion job", async () => {
+    const tenantResponse = await server.inject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Trondheim Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await server.inject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Onboarding Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const crawlResponse = await server.inject({
+      method: "POST",
+      url: "/sources/crawl",
+      payload: {
+        agentId: agent.id,
+        startUrls: ["https://example.no"],
+        includePaths: ["/help"],
+        excludePaths: ["/legal"],
+        depthLimit: 3
+      }
+    });
+
+    expect(crawlResponse.statusCode).toBe(201);
+    const body = crawlResponse.json();
+    expect(body.source.id).toMatch(/^source_/u);
+    expect(body.source.status).toBe("queued");
+    expect(body.source.type).toBe("website");
+    expect(body.job.id).toMatch(/^job_/u);
+    expect(body.job.status).toBe("queued");
+  });
 });

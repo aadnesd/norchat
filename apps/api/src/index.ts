@@ -42,6 +42,23 @@ type Source = z.infer<typeof sourceSchema> & {
   createdAt: string;
   lastSyncedAt?: string;
 };
+
+const crawlConfigSchema = z.object({
+  agentId: z.string().min(1),
+  startUrls: z.array(z.string().url()).min(1),
+  sitemapUrl: z.string().url().optional(),
+  includePaths: z.array(z.string().min(1)).optional(),
+  excludePaths: z.array(z.string().min(1)).optional(),
+  depthLimit: z.number().int().min(1).max(10).optional()
+});
+
+type IngestionJob = {
+  id: string;
+  sourceId: string;
+  kind: "crawl";
+  status: "queued" | "processing" | "complete" | "failed";
+  createdAt: string;
+};
 export const buildServer = async () => {
   const fastify = Fastify({ logger: true });
 
@@ -60,6 +77,7 @@ export const buildServer = async () => {
   const tenants = new Map<string, Tenant>();
   const agents = new Map<string, Agent>();
   const sources = new Map<string, Source>();
+  const ingestionJobs = new Map<string, IngestionJob>();
 
   fastify.get("/health", async () => ({ status: "ok" }));
 
@@ -118,6 +136,39 @@ export const buildServer = async () => {
     };
     sources.set(id, source);
     return reply.code(201).send(source);
+  });
+
+  fastify.post("/sources/crawl", async (request, reply) => {
+    const data = crawlConfigSchema.parse(request.body);
+    if (!agents.has(data.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const sourceId = `source_${crypto.randomUUID()}`;
+    const source: Source = {
+      id: sourceId,
+      agentId: data.agentId,
+      type: "website",
+      config: {
+        startUrls: data.startUrls,
+        sitemapUrl: data.sitemapUrl,
+        includePaths: data.includePaths,
+        excludePaths: data.excludePaths,
+        depthLimit: data.depthLimit
+      },
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    const jobId = `job_${crypto.randomUUID()}`;
+    const job: IngestionJob = {
+      id: jobId,
+      sourceId,
+      kind: "crawl",
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    sources.set(sourceId, source);
+    ingestionJobs.set(jobId, job);
+    return reply.code(201).send({ source, job });
   });
 
   fastify.get("/sources", async (request) => {

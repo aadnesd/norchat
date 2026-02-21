@@ -1,0 +1,7 @@
+{"ts":"2026-02-20T17:47:49.608055+00:00","iteration":0,"hat":"loop","topic":"task.start","triggered":"planner","payload":"create tasks and plans based on /specs, and then start the implementation. you have full technical freedom in terms of tech stack etc, create the tasks and then start the implementation. If you have any questions you have the permission to use your best judgment and then go with what you think is best"}
+{"payload":"tests: missing (vitest no test files), build: pass","topic":"build.done","ts":"2026-02-20T18:07:15.730870+00:00"}
+{"payload":"tests: fail (no test files), lint: not run, typecheck: build ok, audit: not run","topic":"build.blocked","ts":"2026-02-20T18:12:41.423927+00:00"}
+{"payload":"tests: fail (no test files), lint: not run, typecheck: build ok, audit: not run; git repo initialized","topic":"build.blocked","ts":"2026-02-20T18:14:49.104251+00:00"}
+{"payload":"tests: pass (apps/api), lint: not run, typecheck: not run, audit: not run, coverage: not run","topic":"build.done","ts":"2026-02-20T18:20:47.445476+00:00"}
+{"payload":"tests: pass, lint: not run, typecheck: not run, audit: not run, coverage: not run","topic":"build.done","ts":"2026-02-20T18:24:46.926460+00:00"}
+{"payload":"tests: pass (web), lint: pass (web), typecheck: not run, audit: not run, build: pass (web)","topic":"build.done","ts":"2026-02-20T18:30:20.936520+00:00"}

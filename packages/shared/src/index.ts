@@ -25,6 +25,8 @@ export type TenantCreateInput = {
 
 export type AgentStatus = "draft" | "active" | "paused" | "archived";
 
+export type MessageRole = "system" | "assistant" | "user" | "tool";
+
 export type Agent = {
   id: string;
   tenantId: string;
@@ -50,6 +52,53 @@ export type SourceType =
   | "ticketing"
   | "qa";
 
+export type SourceWebsiteConfig = {
+  startUrls: string[];
+  sitemapUrl?: string;
+  includePaths?: string[];
+  excludePaths?: string[];
+  depthLimit?: number;
+};
+
+export type SourceFileConfig = {
+  filename?: string;
+  contentType?: string;
+  sizeBytes?: number;
+};
+
+export type SourceTextConfig = {
+  title?: string;
+  language?: string;
+};
+
+export type SourceQaConfig = {
+  pairs: Array<{
+    question: string;
+    answer: string;
+  }>;
+};
+
+export type SourceNotionConfig = {
+  workspaceId?: string;
+  pageIds?: string[];
+  databaseIds?: string[];
+};
+
+export type SourceTicketingConfig = {
+  provider: "zendesk" | "salesforce";
+  accountId?: string;
+  projectId?: string;
+};
+
+export type SourceConfig =
+  | SourceWebsiteConfig
+  | SourceFileConfig
+  | SourceTextConfig
+  | SourceQaConfig
+  | SourceNotionConfig
+  | SourceTicketingConfig
+  | Record<string, unknown>;
+
 export type SourceStatus = "queued" | "processing" | "ready" | "failed";
 
 export type Source = {
@@ -57,7 +106,7 @@ export type Source = {
   agentId: string;
   type: SourceType;
   value?: string;
-  config?: Record<string, unknown>;
+  config?: SourceConfig;
   status: SourceStatus;
   createdAt: string;
   lastSyncedAt?: string;
@@ -67,7 +116,7 @@ export type SourceCreateInput = {
   agentId: string;
   type: SourceType;
   value?: string;
-  config?: Record<string, unknown>;
+  config?: SourceConfig;
 };
 
 export type CrawlConfig = {
@@ -84,7 +133,7 @@ export type IngestionJobStatus = "queued" | "processing" | "complete" | "failed"
 export type IngestionJob = {
   id: string;
   sourceId: string;
-  kind: "crawl" | "file" | "text";
+  kind: "crawl" | "file" | "text" | "qa";
   status: IngestionJobStatus;
   createdAt: string;
   completedAt?: string;
@@ -96,11 +145,18 @@ export type IngestionJobBundle = {
 };
 
 export type ActionType =
+  | "human_escalation"
+  | "web_search"
   | "slack_notify"
   | "ticket_create"
   | "lead_capture"
   | "schedule"
   | "billing"
+  | "stripe_billing"
+  | "calendly_schedule"
+  | "calcom_schedule"
+  | "salesforce_ticket"
+  | "shopify_action"
   | "custom_api";
 
 export type Action = {
@@ -112,14 +168,26 @@ export type Action = {
   createdAt: string;
 };
 
+export type ActionCreateInput = {
+  agentId: string;
+  type: ActionType;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+};
+
 export type ChannelType =
   | "web_widget"
   | "help_page"
   | "slack"
   | "whatsapp"
   | "email"
+  | "messenger"
+  | "instagram"
   | "zendesk"
-  | "salesforce";
+  | "salesforce"
+  | "shopify"
+  | "zapier"
+  | "wordpress";
 
 export type Channel = {
   id: string;
@@ -128,6 +196,59 @@ export type Channel = {
   config?: Record<string, unknown>;
   enabled: boolean;
   createdAt: string;
+};
+
+export type ChannelCreateInput = {
+  agentId: string;
+  type: ChannelType;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+};
+
+export type ConversationStatus = "open" | "closed" | "escalated";
+
+export type Conversation = {
+  id: string;
+  agentId: string;
+  channelId?: string;
+  status: ConversationStatus;
+  startedAt: string;
+  endedAt?: string;
+};
+
+export type ConversationCreateInput = {
+  agentId: string;
+  channelId?: string;
+};
+
+export type Message = {
+  id: string;
+  conversationId: string;
+  role: MessageRole;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type MessageCreateInput = {
+  conversationId: string;
+  role: MessageRole;
+  content: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type Feedback = {
+  id: string;
+  messageId: string;
+  rating: 1 | 2 | 3 | 4 | 5;
+  comment?: string;
+  createdAt: string;
+};
+
+export type FeedbackCreateInput = {
+  messageId: string;
+  rating: 1 | 2 | 3 | 4 | 5;
+  comment?: string;
 };
 
 export type ApiError = {

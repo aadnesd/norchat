@@ -1,0 +1,2 @@
+{"ts":"2026-02-20T17:43:28.670630+00:00","iteration":0,"hat":"loop","topic":"task.start","triggered":"planner","payload":"create tasks and plans based on /specs, and then start the implementation"}
+{"payload":"you should create the tasks, you are the architect so select the tech stack you want etc. You have full creative and techincal freedom","topic":"human.guidance","ts":"2026-02-20T17:46:01.916823+00:00"}

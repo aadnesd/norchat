@@ -1,0 +1,9 @@
+2026-02-20T17:43:28.773588Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T17:43:28.773671Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: false)
+2026-02-20T17:43:28.773680Z  INFO ralph_core::event_loop: Successfully loaded 0 memories from store
+2026-02-20T17:43:28.773685Z  INFO ralph_core::event_loop: Memory store is empty - no memories to inject
+2026-02-20T17:44:10.657541Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T17:44:10.659726Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: false)
+2026-02-20T17:44:10.659733Z  INFO ralph_core::event_loop: Successfully loaded 0 memories from store
+2026-02-20T17:44:10.659736Z  INFO ralph_core::event_loop: Memory store is empty - no memories to inject
+2026-02-20T17:46:55.278552Z  INFO ralph_tui::app: Ctrl+C detected, signaling main loop

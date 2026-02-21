@@ -1,0 +1,9 @@
+# Ralph preset: spec-driven (opencode)
+
+cli:
+  backend: "opencode"
+
+event_loop:
+  prompt_file: "PROMPT.md"
+  completion_promise: "LOOP_COMPLETE"
+  max_iterations: 100

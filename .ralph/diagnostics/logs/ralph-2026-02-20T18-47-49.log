@@ -1,0 +1,50 @@
+2026-02-20T17:47:49.711530Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T17:47:49.711577Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: false)
+2026-02-20T17:47:49.711584Z  INFO ralph_core::event_loop: Successfully loaded 0 memories from store
+2026-02-20T17:47:49.711588Z  INFO ralph_core::event_loop: Memory store is empty - no memories to inject
+2026-02-20T17:52:26.907215Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T17:52:26.907247Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: false)
+2026-02-20T17:52:26.907254Z  INFO ralph_core::event_loop: Successfully loaded 0 memories from store
+2026-02-20T17:52:26.907258Z  INFO ralph_core::event_loop: Memory store is empty - no memories to inject
+2026-02-20T18:07:19.344496Z  WARN ralph_core::event_loop: build.done rejected: backpressure checks failed tests=false lint=false typecheck=false audit=false coverage=false duplication=false
+2026-02-20T18:07:19.344790Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:07:19.344806Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:07:19.345633Z  INFO ralph_core::event_loop: Successfully loaded 2 memories from store
+2026-02-20T18:07:19.345651Z  INFO ralph_core::event_loop: Injecting 2 memories (506 chars) into prompt
+2026-02-20T18:07:19.345817Z  INFO ralph_core::event_loop: Injecting scratchpad (614 chars) into prompt
+2026-02-20T18:07:19.346019Z  INFO ralph_core::event_loop: Injecting ready tasks (4 ready, 4 open, 1 closed) into prompt
+2026-02-20T18:12:51.928802Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:12:51.928854Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:12:51.929284Z  INFO ralph_core::event_loop: Successfully loaded 4 memories from store
+2026-02-20T18:12:51.929306Z  INFO ralph_core::event_loop: Injecting 4 memories (901 chars) into prompt
+2026-02-20T18:12:51.929479Z  INFO ralph_core::event_loop: Injecting scratchpad (873 chars) into prompt
+2026-02-20T18:12:51.929671Z  INFO ralph_core::event_loop: Injecting ready tasks (6 ready, 6 open, 1 closed) into prompt
+2026-02-20T18:14:55.927516Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:14:55.927565Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:14:55.928420Z  INFO ralph_core::event_loop: Successfully loaded 5 memories from store
+2026-02-20T18:14:55.928441Z  INFO ralph_core::event_loop: Injecting 5 memories (1038 chars) into prompt
+2026-02-20T18:14:55.928784Z  INFO ralph_core::event_loop: Injecting scratchpad (1003 chars) into prompt
+2026-02-20T18:14:55.929391Z  INFO ralph_core::event_loop: Injecting ready tasks (5 ready, 5 open, 2 closed) into prompt
+2026-02-20T18:20:53.032049Z  WARN ralph_core::event_loop: build.done rejected: backpressure checks failed tests=true lint=false typecheck=false audit=false coverage=false duplication=false
+2026-02-20T18:20:53.032312Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:20:53.032332Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:20:53.032592Z  INFO ralph_core::event_loop: Successfully loaded 6 memories from store
+2026-02-20T18:20:53.032611Z  INFO ralph_core::event_loop: Injecting 6 memories (1240 chars) into prompt
+2026-02-20T18:20:53.032781Z  INFO ralph_core::event_loop: Injecting scratchpad (1175 chars) into prompt
+2026-02-20T18:20:53.033149Z  INFO ralph_core::event_loop: Injecting ready tasks (4 ready, 4 open, 3 closed) into prompt
+2026-02-20T18:24:49.908061Z  WARN ralph_core::event_loop: build.done rejected: backpressure checks failed tests=true lint=false typecheck=false audit=false coverage=false duplication=false
+2026-02-20T18:24:49.908104Z  WARN ralph_core::event_loop: Task abandoned after 3 consecutive blocks task_id=Backpressure checks failed. Fix tests/lint/typecheck/audit/coverage/complexity/duplication/specs before emitting build.done.
+2026-02-20T18:24:49.908254Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:24:49.908266Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:24:49.908565Z  INFO ralph_core::event_loop: Successfully loaded 6 memories from store
+2026-02-20T18:24:49.908579Z  INFO ralph_core::event_loop: Injecting 6 memories (1240 chars) into prompt
+2026-02-20T18:24:49.908861Z  INFO ralph_core::event_loop: Injecting scratchpad (1348 chars) into prompt
+2026-02-20T18:24:49.909079Z  INFO ralph_core::event_loop: Injecting ready tasks (3 ready, 3 open, 4 closed) into prompt
+2026-02-20T18:30:25.071727Z  WARN ralph_core::event_loop: build.done rejected: backpressure checks failed tests=true lint=true typecheck=false audit=false coverage=false duplication=false
+2026-02-20T18:30:25.072014Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-02-20T18:30:25.072024Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-02-20T18:30:25.072540Z  INFO ralph_core::event_loop: Successfully loaded 8 memories from store
+2026-02-20T18:30:25.072563Z  INFO ralph_core::event_loop: Injecting 8 memories (1707 chars) into prompt
+2026-02-20T18:30:25.073163Z  INFO ralph_core::event_loop: Injecting scratchpad (1556 chars) into prompt
+2026-02-20T18:30:25.073398Z  INFO ralph_core::event_loop: Injecting ready tasks (2 ready, 2 open, 5 closed) into prompt
+2026-02-21T00:36:50.263794Z  INFO ralph_tui::app: Ctrl+C detected, signaling main loop

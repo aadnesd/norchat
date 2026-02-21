@@ -119,6 +119,38 @@ export type SourceCreateInput = {
   config?: SourceConfig;
 };
 
+export type Chunk = {
+  id: string;
+  agentId: string;
+  sourceId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ChunkCreateInput = {
+  sourceId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type RetrievalRequest = {
+  agentId: string;
+  query: string;
+  maxResults?: number;
+  sourceIds?: string[];
+  minScore?: number;
+};
+
+export type RetrievalResult = {
+  chunk: Pick<Chunk, "id" | "sourceId" | "content" | "metadata">;
+  score: number;
+};
+
+export type RetrievalResponse = {
+  items: RetrievalResult[];
+};
+
 export type CrawlConfig = {
   agentId: string;
   startUrls: string[];

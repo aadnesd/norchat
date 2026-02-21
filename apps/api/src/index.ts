@@ -59,6 +59,23 @@ const fileIngestionSchema = z.object({
   sizeBytes: z.number().int().positive().optional()
 });
 
+const textIngestionSchema = z
+  .object({
+    text: z.string().min(1),
+    chunkSize: z.number().int().min(5).max(1000).optional(),
+    chunkOverlap: z.number().int().min(0).max(500).optional(),
+    metadata: z.record(z.unknown()).optional()
+  })
+  .refine((data) => {
+    if (data.chunkOverlap === undefined || data.chunkSize === undefined) {
+      return true;
+    }
+    return data.chunkOverlap < data.chunkSize;
+  }, {
+    message: "chunk_overlap_must_be_less_than_chunk_size",
+    path: ["chunkOverlap"]
+  });
+
 const ingestionJobStatusSchema = z.enum([
   "queued",
   "processing",
@@ -71,6 +88,16 @@ type IngestionJob = {
   sourceId: string;
   kind: "crawl" | "file";
   status: z.infer<typeof ingestionJobStatusSchema>;
+  createdAt: string;
+};
+
+type Chunk = {
+  id: string;
+  agentId: string;
+  sourceId: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+  embedding: Record<string, number>;
   createdAt: string;
 };
 export const buildServer = async () => {
@@ -92,6 +119,7 @@ export const buildServer = async () => {
   const agents = new Map<string, Agent>();
   const sources = new Map<string, Source>();
   const ingestionJobs = new Map<string, IngestionJob>();
+  const chunks = new Map<string, Chunk>();
 
   fastify.get("/health", async () => ({ status: "ok" }));
 
@@ -216,6 +244,58 @@ export const buildServer = async () => {
     return reply.code(201).send({ source, job });
   });
 
+  fastify.post("/sources/:id/ingest-text", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const data = textIngestionSchema.parse(request.body);
+    const source = sources.get(id);
+    if (!source) {
+      return reply.code(404).send({ error: "source_not_found" });
+    }
+    const chunkSize = data.chunkSize ?? 120;
+    const chunkOverlap =
+      data.chunkOverlap ?? Math.min(20, Math.max(chunkSize - 1, 0));
+    const textChunks = splitIntoChunks(data.text, {
+      chunkSize,
+      chunkOverlap
+    });
+    const createdAt = new Date().toISOString();
+    const chunkCount = textChunks.length;
+    const createdChunks = textChunks.map((content, index) => {
+      const chunkId = `chunk_${crypto.randomUUID()}`;
+      const metadata: Record<string, unknown> = {
+        ...data.metadata,
+        chunkIndex: index,
+        chunkCount
+      };
+      const chunk: Chunk = {
+        id: chunkId,
+        agentId: source.agentId,
+        sourceId: source.id,
+        content,
+        metadata,
+        embedding: buildEmbedding(content),
+        createdAt
+      };
+      chunks.set(chunkId, chunk);
+      return {
+        id: chunkId,
+        sourceId: source.id,
+        content,
+        metadata,
+        createdAt
+      };
+    });
+
+    sources.set(source.id, {
+      ...source,
+      status: "ready",
+      lastSyncedAt: createdAt
+    });
+
+    return reply.code(201).send({ chunks: createdChunks });
+  });
+
   fastify.get("/ingestion-jobs", async (request) => {
     const schema = z.object({
       agentId: z.string().optional(),
@@ -325,6 +405,55 @@ export const buildServer = async () => {
     items: ["website", "file", "text", "notion", "ticketing", "qa"]
   }));
 
+  fastify.post("/retrieve", async (request, reply) => {
+    const schema = z.object({
+      agentId: z.string().min(1),
+      query: z.string().min(1),
+      maxResults: z.number().int().min(1).max(20).optional(),
+      sourceIds: z.array(z.string().min(1)).optional(),
+      minScore: z.number().min(0).max(1).optional()
+    });
+    const data = schema.parse(request.body);
+    if (!agents.has(data.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const queryEmbedding = buildEmbedding(data.query);
+    const minScore = data.minScore ?? 0;
+    const maxResults = data.maxResults ?? 5;
+    const sourceFilter = data.sourceIds
+      ? new Set(data.sourceIds)
+      : undefined;
+
+    const scored = Array.from(chunks.values())
+      .filter((chunk) => {
+        if (chunk.agentId !== data.agentId) {
+          return false;
+        }
+        if (sourceFilter && !sourceFilter.has(chunk.sourceId)) {
+          return false;
+        }
+        return true;
+      })
+      .map((chunk) => ({
+        chunk,
+        score: computeSimilarity(queryEmbedding, chunk.embedding)
+      }))
+      .filter((item) => item.score > minScore)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxResults)
+      .map((item) => ({
+        chunk: {
+          id: item.chunk.id,
+          sourceId: item.chunk.sourceId,
+          content: item.chunk.content,
+          metadata: item.chunk.metadata
+        },
+        score: item.score
+      }));
+
+    return { items: scored };
+  });
+
   fastify.post("/chat", async (request) => {
     const schema = z.object({
       agentId: z.string().min(1),
@@ -341,6 +470,77 @@ export const buildServer = async () => {
   });
 
   return fastify;
+};
+
+const tokenize = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/giu, " ")
+    .split(/\s+/u)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+
+const buildEmbedding = (text: string) => {
+  const embedding: Record<string, number> = {};
+  for (const token of tokenize(text)) {
+    embedding[token] = (embedding[token] ?? 0) + 1;
+  }
+  return embedding;
+};
+
+const computeSimilarity = (
+  queryEmbedding: Record<string, number>,
+  chunkEmbedding: Record<string, number>
+) => {
+  let dot = 0;
+  let queryNorm = 0;
+  let chunkNorm = 0;
+  for (const value of Object.values(queryEmbedding)) {
+    queryNorm += value * value;
+  }
+  for (const value of Object.values(chunkEmbedding)) {
+    chunkNorm += value * value;
+  }
+  if (queryNorm === 0 || chunkNorm === 0) {
+    return 0;
+  }
+  for (const [token, value] of Object.entries(queryEmbedding)) {
+    const chunkValue = chunkEmbedding[token];
+    if (chunkValue) {
+      dot += value * chunkValue;
+    }
+  }
+  return dot / (Math.sqrt(queryNorm) * Math.sqrt(chunkNorm));
+};
+
+const splitIntoChunks = (
+  text: string,
+  options: { chunkSize: number; chunkOverlap: number }
+) => {
+  const words = text.trim().split(/\s+/u).filter(Boolean);
+  if (words.length === 0) {
+    return [];
+  }
+  const chunkSize = Math.max(options.chunkSize, 1);
+  const chunkOverlap = Math.max(
+    Math.min(options.chunkOverlap, chunkSize - 1),
+    0
+  );
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < words.length) {
+    const end = Math.min(start + chunkSize, words.length);
+    chunks.push(words.slice(start, end).join(" "));
+    if (end >= words.length) {
+      break;
+    }
+    const nextStart = end - chunkOverlap;
+    if (nextStart <= start) {
+      break;
+    }
+    start = nextStart;
+  }
+  return chunks;
 };
 
 const isMain =

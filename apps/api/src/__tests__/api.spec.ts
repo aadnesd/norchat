@@ -206,4 +206,70 @@ describe("api routes", () => {
     const completeBody = completeResponse.json();
     expect(completeBody.job.status).toBe("complete");
   });
+
+  it("ingests text chunks and retrieves relevant content", async () => {
+    const tenantResponse = await server.inject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Nordic Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await server.inject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "FAQ Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await server.inject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: agent.id,
+        type: "text",
+        value: "FAQ"
+      }
+    });
+    const source = sourceResponse.json();
+
+    const ingestResponse = await server.inject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: {
+        text: "Shipping policy: We ship within 2 days. Refund policy: Refunds within 30 days.",
+        chunkSize: 6,
+        chunkOverlap: 0,
+        metadata: {
+          title: "Support FAQ"
+        }
+      }
+    });
+
+    expect(ingestResponse.statusCode).toBe(201);
+    const ingestBody = ingestResponse.json();
+    expect(ingestBody.chunks.length).toBeGreaterThan(1);
+    expect(ingestBody.chunks[0].id).toMatch(/^chunk_/u);
+
+    const retrieveResponse = await server.inject({
+      method: "POST",
+      url: "/retrieve",
+      payload: {
+        agentId: agent.id,
+        query: "refunds",
+        maxResults: 2
+      }
+    });
+
+    expect(retrieveResponse.statusCode).toBe(200);
+    const retrieveBody = retrieveResponse.json();
+    expect(retrieveBody.items.length).toBeGreaterThan(0);
+    expect(retrieveBody.items[0].chunk.content).toMatch(/refund/i);
+  });
 });

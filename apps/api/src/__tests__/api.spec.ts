@@ -135,4 +135,75 @@ describe("api routes", () => {
     expect(body.job.id).toMatch(/^job_/u);
     expect(body.job.status).toBe("queued");
   });
+
+  it("queues file ingestion and tracks job status", async () => {
+    const tenantResponse = await server.inject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Stavanger Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await server.inject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Docs Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const fileResponse = await server.inject({
+      method: "POST",
+      url: "/sources/file",
+      payload: {
+        agentId: agent.id,
+        filename: "pricing.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 1024
+      }
+    });
+
+    expect(fileResponse.statusCode).toBe(201);
+    const fileBody = fileResponse.json();
+    expect(fileBody.source.type).toBe("file");
+    expect(fileBody.source.status).toBe("queued");
+    expect(fileBody.job.kind).toBe("file");
+    expect(fileBody.job.status).toBe("queued");
+
+    const listResponse = await server.inject({
+      method: "GET",
+      url: `/ingestion-jobs?sourceId=${fileBody.source.id}`
+    });
+    expect(listResponse.statusCode).toBe(200);
+    const listBody = listResponse.json();
+    expect(listBody.items.length).toBe(1);
+
+    const jobResponse = await server.inject({
+      method: "GET",
+      url: `/ingestion-jobs/${fileBody.job.id}`
+    });
+    expect(jobResponse.statusCode).toBe(200);
+
+    const processingResponse = await server.inject({
+      method: "POST",
+      url: `/ingestion-jobs/${fileBody.job.id}/status`,
+      payload: { status: "processing" }
+    });
+    expect(processingResponse.statusCode).toBe(200);
+    expect(processingResponse.json().job.status).toBe("processing");
+
+    const completeResponse = await server.inject({
+      method: "POST",
+      url: `/ingestion-jobs/${fileBody.job.id}/status`,
+      payload: { status: "complete" }
+    });
+    expect(completeResponse.statusCode).toBe(200);
+    const completeBody = completeResponse.json();
+    expect(completeBody.job.status).toBe("complete");
+  });
 });

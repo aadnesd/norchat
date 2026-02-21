@@ -52,11 +52,25 @@ const crawlConfigSchema = z.object({
   depthLimit: z.number().int().min(1).max(10).optional()
 });
 
+const fileIngestionSchema = z.object({
+  agentId: z.string().min(1),
+  filename: z.string().min(1),
+  contentType: z.string().min(1).optional(),
+  sizeBytes: z.number().int().positive().optional()
+});
+
+const ingestionJobStatusSchema = z.enum([
+  "queued",
+  "processing",
+  "complete",
+  "failed"
+]);
+
 type IngestionJob = {
   id: string;
   sourceId: string;
-  kind: "crawl";
-  status: "queued" | "processing" | "complete" | "failed";
+  kind: "crawl" | "file";
+  status: z.infer<typeof ingestionJobStatusSchema>;
   createdAt: string;
 };
 export const buildServer = async () => {
@@ -169,6 +183,104 @@ export const buildServer = async () => {
     sources.set(sourceId, source);
     ingestionJobs.set(jobId, job);
     return reply.code(201).send({ source, job });
+  });
+
+  fastify.post("/sources/file", async (request, reply) => {
+    const data = fileIngestionSchema.parse(request.body);
+    if (!agents.has(data.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const sourceId = `source_${crypto.randomUUID()}`;
+    const source: Source = {
+      id: sourceId,
+      agentId: data.agentId,
+      type: "file",
+      config: {
+        filename: data.filename,
+        contentType: data.contentType,
+        sizeBytes: data.sizeBytes
+      },
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    const jobId = `job_${crypto.randomUUID()}`;
+    const job: IngestionJob = {
+      id: jobId,
+      sourceId,
+      kind: "file",
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    sources.set(sourceId, source);
+    ingestionJobs.set(jobId, job);
+    return reply.code(201).send({ source, job });
+  });
+
+  fastify.get("/ingestion-jobs", async (request) => {
+    const schema = z.object({
+      agentId: z.string().optional(),
+      sourceId: z.string().optional(),
+      status: ingestionJobStatusSchema.optional()
+    });
+    const data = schema.parse(request.query);
+    let items = Array.from(ingestionJobs.values());
+    if (data.sourceId) {
+      items = items.filter((job) => job.sourceId === data.sourceId);
+    }
+    if (data.status) {
+      items = items.filter((job) => job.status === data.status);
+    }
+    if (data.agentId) {
+      items = items.filter((job) => {
+        const source = sources.get(job.sourceId);
+        return source?.agentId === data.agentId;
+      });
+    }
+    return { items };
+  });
+
+  fastify.get("/ingestion-jobs/:id", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const job = ingestionJobs.get(id);
+    if (!job) {
+      return reply.code(404).send({ error: "job_not_found" });
+    }
+    return { job };
+  });
+
+  fastify.post("/ingestion-jobs/:id/status", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const bodySchema = z.object({ status: ingestionJobStatusSchema });
+    const { id } = paramsSchema.parse(request.params);
+    const { status } = bodySchema.parse(request.body);
+    const job = ingestionJobs.get(id);
+    if (!job) {
+      return reply.code(404).send({ error: "job_not_found" });
+    }
+    const updatedJob: IngestionJob = { ...job, status };
+    ingestionJobs.set(id, updatedJob);
+
+    const source = sources.get(updatedJob.sourceId);
+    if (source) {
+      let nextStatus: Source["status"] = source.status;
+      if (status === "processing") {
+        nextStatus = "processing";
+      } else if (status === "complete") {
+        nextStatus = "ready";
+      } else if (status === "failed") {
+        nextStatus = "failed";
+      } else if (status === "queued") {
+        nextStatus = "queued";
+      }
+      sources.set(source.id, {
+        ...source,
+        status: nextStatus,
+        lastSyncedAt: status === "complete" ? new Date().toISOString() : source.lastSyncedAt
+      });
+    }
+
+    return { job: updatedJob };
   });
 
   fastify.get("/sources", async (request) => {

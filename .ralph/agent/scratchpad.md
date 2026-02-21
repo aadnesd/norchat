@@ -9,3 +9,4 @@ Scratchpad initialized.
 2026-02-21: Reviewed apps/web/playwright.config.ts; baseURL and webServer already aligned (CI 4173 preview, local 5173 dev). Next: optionally run apps/web e2e and commit if desired.
 2026-02-21: Completed shared types + Playwright baseline; tests not run.
 2026-02-21: Ran npm test (apps/api + apps/web). Added vitest exclude for Playwright tests in apps/web/vite.config.ts.
+2026-02-21: Implemented ingestion MVP file source queue + ingestion job status endpoints; added API tests; ran npm test.

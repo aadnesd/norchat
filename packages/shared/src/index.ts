@@ -221,11 +221,27 @@ export type ChannelType =
   | "zapier"
   | "wordpress";
 
+export type ChannelWebWidgetConfig = {
+  allowedDomains?: string[];
+  theme?: "norway" | "neutral";
+};
+
+export type ChannelHelpPageConfig = {
+  allowedDomains?: string[];
+  title?: string;
+  description?: string;
+};
+
+export type ChannelConfig =
+  | ChannelWebWidgetConfig
+  | ChannelHelpPageConfig
+  | Record<string, unknown>;
+
 export type Channel = {
   id: string;
   agentId: string;
   type: ChannelType;
-  config?: Record<string, unknown>;
+  config?: ChannelConfig;
   enabled: boolean;
   createdAt: string;
 };
@@ -233,7 +249,7 @@ export type Channel = {
 export type ChannelCreateInput = {
   agentId: string;
   type: ChannelType;
-  config?: Record<string, unknown>;
+  config?: ChannelConfig;
   enabled?: boolean;
 };
 

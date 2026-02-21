@@ -208,6 +208,13 @@ p {
   font-family: inherit;
 }
 
+.primary:disabled,
+.secondary:disabled,
+.ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .primary {
   background: var(--teal);
   color: white;
@@ -242,6 +249,26 @@ select {
   border: 1px solid #e1e0dd;
   font-size: 1rem;
   font-family: inherit;
+}
+
+textarea {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e1e0dd;
+  font-size: 1rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.notice {
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-weight: 600;
+}
+
+.notice.error {
+  background: #ffe5e5;
+  color: #9b2d2d;
 }
 
 .info-card {
@@ -338,6 +365,11 @@ select {
 .pill.queued {
   background: #e3ebff;
   color: #2d4f9b;
+}
+
+.pill.failed {
+  background: #ffe5e5;
+  color: #9b2d2d;
 }
 
 .pill.soft {

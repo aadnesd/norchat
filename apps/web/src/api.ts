@@ -105,6 +105,51 @@ export type ChannelUpdateInput = {
   enabled?: boolean;
 };
 
+export type MetricsSeriesPoint = {
+  date: string;
+  conversations: number;
+  deflections: number;
+  escalations: number;
+};
+
+export type MetricsSummary = {
+  window: {
+    from: string;
+    to: string;
+  };
+  totals: {
+    conversations: number;
+    deflected: number;
+    escalated: number;
+    retrievals: number;
+    actions: number;
+    ingestionCompleted: number;
+    feedbackCount: number;
+  };
+  rates: {
+    deflectionRate: number;
+    avgFirstResponseSeconds: number;
+    avgResolutionSeconds: number;
+    avgRetrievalLatencyMs: number;
+    avgFeedbackRating: number;
+  };
+  topIntents: Array<{ intent: string; count: number }>;
+  series: MetricsSeriesPoint[];
+};
+
+export type MetricConversation = {
+  conversationId: string;
+  tenantId?: string;
+  agentId?: string;
+  channelId?: string;
+  status: "open" | "closed" | "escalated";
+  startedAt?: string;
+  firstResponseSeconds: number | null;
+  resolutionSeconds: number | null;
+  lastActivityAt?: string;
+  intent?: string;
+};
+
 type ApiError = {
   error?: string;
   message?: string;
@@ -130,6 +175,18 @@ const apiFetch = async <T,>(baseUrl: string, path: string, options: RequestInit)
   }
 
   return (await response.json()) as T;
+};
+
+const buildQuery = (params: Record<string, string | number | undefined>) => {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === "") {
+      return;
+    }
+    searchParams.set(key, String(value));
+  });
+  const queryString = searchParams.toString();
+  return queryString ? `?${queryString}` : "";
 };
 
 export const createApiClient = (baseUrl: string) => {
@@ -179,6 +236,36 @@ export const createApiClient = (baseUrl: string) => {
       apiFetch<{ channel: Channel }>(baseUrl, `/channels/${channelId}`, {
         method: "PATCH",
         body: JSON.stringify(input)
-      })
+      }),
+    getMetricsSummary: (input: {
+      tenantId?: string;
+      agentId?: string;
+      channelId?: string;
+      from?: string;
+      to?: string;
+    }) =>
+      apiFetch<MetricsSummary>(
+        baseUrl,
+        `/metrics/summary${buildQuery(input)}`,
+        {
+          method: "GET"
+        }
+      ),
+    getMetricConversations: (input: {
+      tenantId?: string;
+      agentId?: string;
+      channelId?: string;
+      from?: string;
+      to?: string;
+      limit?: number;
+      offset?: number;
+    }) =>
+      apiFetch<{ items: MetricConversation[] }>(
+        baseUrl,
+        `/metrics/conversations${buildQuery(input)}`,
+        {
+          method: "GET"
+        }
+      )
   };
 };

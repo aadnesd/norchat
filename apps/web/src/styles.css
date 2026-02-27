@@ -499,6 +499,165 @@ code {
   overflow-x: auto;
 }
 
+.observability {
+  display: grid;
+  gap: 24px;
+}
+
+.metric-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.metric-card {
+  background: #fdf7ef;
+  border: 1px solid #f1e6d7;
+  padding: 16px;
+  border-radius: 16px;
+  display: grid;
+  gap: 6px;
+}
+
+.metric-meta {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.series-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.series-list {
+  display: grid;
+  gap: 10px;
+}
+
+.series-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 140px;
+  align-items: center;
+  gap: 12px;
+}
+
+.series-bar {
+  height: 8px;
+  background: #efe6da;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.series-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(120deg, #0f6c5f, #44a79a);
+  border-radius: 999px;
+  min-width: 6%;
+}
+
+.series-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.series-value {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: right;
+}
+
+.intent-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.intent-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.intent-card {
+  background: #fff;
+  border: 1px solid #ece6dc;
+  padding: 12px;
+  border-radius: 14px;
+}
+
+.intent-title {
+  font-weight: 600;
+}
+
+.intent-meta {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.conversation-list {
+  display: grid;
+  gap: 12px;
+}
+
+.conversation-row {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1.4fr 0.7fr 0.8fr 0.8fr;
+  align-items: center;
+  padding: 14px;
+  background: #fff9f1;
+  border: 1px solid #f2e5d6;
+  border-radius: 16px;
+}
+
+.conversation-id {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.status-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  text-align: center;
+}
+
+.status-pill.open {
+  background: #ffe9c7;
+  color: #8a5a16;
+}
+
+.status-pill.closed {
+  background: #d9efe6;
+  color: #0f6c5f;
+}
+
+.status-pill.escalated {
+  background: #fce2df;
+  color: #8c2f2f;
+}
+
+@media (max-width: 900px) {
+  .conversation-row {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .series-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .series-value {
+    text-align: left;
+  }
+}
+
 @media (max-width: 720px) {
   .panel-controls {
     flex-direction: column;

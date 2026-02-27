@@ -28,28 +28,42 @@ Tests: Widget load + allowlist enforcement tests, plus help page smoke checks, v
 Why: The guided flow wires the onboarding API integration so new customers can complete setup end-to-end.
 Tests: `apps/web` onboarding API client tests validate tenant, agent, source, and channel request payloads.
 
+7. Retrieval hybrid/rerank (hybrid scoring + rerank).
+Why: Hybrid scoring improves recall and relevance, while reranking stabilizes top results for grounded answers.
+Tests: Retrieval hybrid scoring + rerank cases cover scoring blend correctness and result ordering.
+
+8. Retrieval tests: accuracy + latency.
+Why: Accuracy and latency tests catch regressions and keep retrieval quality within performance targets.
+Tests: Retrieval accuracy fixtures and latency benchmarks validate quality and response time.
+
+9. Actions framework and first integrations (CRM escalation, Slack notify, Stripe billing).
+Why: Actions unlock operational workflows and revenue hooks beyond basic chat.
+Tests: API action endpoint contract coverage plus execution flow tests validate payloads, dispatch, and failure handling.
+
+10. Conversation API scaffolding (Conversation includes optional `user_id`).
+Why: Conversation history is required for operators and customers to review past interactions, and the spec mismatch requires optional `user_id` support on Conversation.
+Tests: Conversation list/create endpoint tests cover validation, defaults (including optional `user_id`), and pagination.
+
+11. Multi-channel connectors (email, Slack, WhatsApp, Zendesk, Salesforce). (High priority)
+Why: Customers expect omnichannel coverage for support deflection, and the platform must ingest + route all listed channels.
+Tests: Connector smoke tests ensure authentication, webhook ingestion, and message routing work per channel. Tests run: `npm run test -w apps/api`. Build run: `npm run build`.
+
+12. Analytics + observability dashboards (metrics endpoints, dashboard UI, conversation review).
+Why: Operators need visibility into deflection, response quality, and system health.
+Tests: `npm run test -w apps/api`, `npm run test -w apps/web`.
+
+13. GDPR controls (deletion, retention), RBAC, audit logging.
+Why: Compliance and security are table stakes for EU customers.
+Tests: API coverage in `apps/api/src/__tests__/api.spec.ts` validates deletion, retention enforcement, RBAC gates, and audit logging events.
+
+14. Playwright visual snapshots for onboarding, widget, and help page are unblocked and completed.
+Why: Visual regressions on customer-facing flows are costly and hard to catch manually, so stable baselines are required in CI.
+Tests: `npm run e2e -w apps/web -- --update-snapshots` regenerated baselines and `npm run e2e -w apps/web` verifies the snapshot suite against the Vite-backed Playwright harness.
+
+15. GDPR retention purge now applies to `/conversations` listing results.
+Why: Listing stale conversations after retention expiry is a GDPR/compliance risk and can expose data that should no longer be visible.
+Tests: Conversation retention coverage in `apps/api/src/__tests__/api.spec.ts` (including the prior failing list case around line ~1486) now passes with zero stale rows returned when retention requires purge.
+
 ## Planned Tasks
 
-1. Retrieval hybrid/rerank + retrieval tests (accuracy + latency).
-Why: Hybrid scoring and coverage tests close retrieval quality gaps and guard against regressions.
-Tests: Retrieval accuracy cases plus latency benchmarks validate hybrid scoring and performance.
-
-2. Actions framework and first integrations (CRM escalation, Slack notify, Stripe billing).
-Why: Actions unlock operational workflows and revenue hooks beyond basic chat.
-Tests: Integration contract tests validate payload shape and failure handling.
-
-3. Multi-channel connectors (email, Slack, WhatsApp, Zendesk, Salesforce).
-Why: Customers expect omnichannel coverage for support deflection.
-Tests: Connector smoke tests ensure authentication and message routing work per channel.
-
-4. Analytics and observability dashboards.
-Why: Operators need visibility into deflection, response quality, and system health.
-Tests: Metrics pipeline tests verify event capture and aggregation correctness.
-
-5. GDPR controls (deletion, retention), RBAC, audit logging.
-Why: Compliance and security are table stakes for EU customers.
-Tests: Policy enforcement tests confirm data deletion, access controls, and audit trails.
-
-6. Playwright visual tests for onboarding, widget, help page.
-Why: Visual regressions on customer-facing flows are costly and hard to catch manually.
-Tests: Playwright snapshots safeguard UI stability across releases.
+No planned tasks remain as of 2026-02-27.

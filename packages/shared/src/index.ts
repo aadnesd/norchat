@@ -232,9 +232,15 @@ export type ChannelHelpPageConfig = {
   description?: string;
 };
 
+export type ChannelWebhookConfig = {
+  authToken: string;
+  verifyToken?: string;
+};
+
 export type ChannelConfig =
   | ChannelWebWidgetConfig
   | ChannelHelpPageConfig
+  | ChannelWebhookConfig
   | Record<string, unknown>;
 
 export type Channel = {
@@ -259,6 +265,7 @@ export type Conversation = {
   id: string;
   agentId: string;
   channelId?: string;
+  userId?: string;
   status: ConversationStatus;
   startedAt: string;
   endedAt?: string;
@@ -267,6 +274,7 @@ export type Conversation = {
 export type ConversationCreateInput = {
   agentId: string;
   channelId?: string;
+  userId?: string;
 };
 
 export type Message = {

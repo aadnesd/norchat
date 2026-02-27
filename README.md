@@ -16,6 +16,24 @@ npm run dev
 
 Note: The API stores vector data under `data/vector-store` by default. Override with `VECTOR_STORE_DIR`. The web app uses `VITE_API_BASE_URL` (defaults to `http://localhost:4000`) to talk to the API.
 
+## Playwright Visual Tests
+
+Run visual tests for the web app with:
+
+```bash
+npm run e2e -w apps/web
+```
+
+Runbook: this command now runs against the Vite app through Playwright `webServer` + `baseURL`; no separate manual server startup is required.
+
+Note: Ensure Playwright browsers are installed (for example `npx playwright install chromium`), and a working Chromium is required.
+
+To update snapshots (onboarding, widget, help page):
+
+```bash
+npm run e2e -w apps/web -- --update-snapshots
+```
+
 ## Repo Layout
 
 - `apps/api` - Fastify API service (tenants, agents, sources, chat)

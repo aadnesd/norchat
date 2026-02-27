@@ -15,6 +15,16 @@ import {
   createRegionalVectorStore,
   type VectorRecord
 } from "./vector-store.js";
+import { buildHelpPage, buildWidgetScript } from "./ui-templates.js";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const getString = (value: unknown) => (typeof value === "string" ? value : undefined);
+
+const getRecord = (value: unknown) => (isRecord(value) ? value : undefined);
+
+const getArray = (value: unknown) => (Array.isArray(value) ? value : undefined);
 
 const tenantSchema = z.object({
   name: z.string().min(1),
@@ -23,6 +33,59 @@ const tenantSchema = z.object({
   dataResidency: z.string().min(2).optional()
 });
 type Tenant = z.infer<typeof tenantSchema> & { id: string; createdAt: string };
+
+const tenantRoleSchema = z.enum(["owner", "admin", "member", "viewer"]);
+type TenantRole = z.infer<typeof tenantRoleSchema>;
+
+const tenantMemberInputSchema = z.object({
+  userId: z.string().min(1),
+  role: tenantRoleSchema
+});
+
+type TenantMember = z.infer<typeof tenantMemberInputSchema> & {
+  id: string;
+  tenantId: string;
+  createdAt: string;
+};
+
+const retentionPolicyInputSchema = z
+  .object({
+    days: z.coerce.number().int().min(0).max(3650).optional(),
+    enabled: z.boolean().optional()
+  })
+  .refine((data) => data.days !== undefined || data.enabled !== undefined, {
+    message: "retention_update_required",
+    path: ["days"]
+  });
+
+type RetentionPolicy = {
+  tenantId: string;
+  days: number;
+  enabled: boolean;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+const gdprDeletionSchema = z
+  .object({
+    userId: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    agentId: z.string().min(1).optional()
+  })
+  .refine((data) => data.userId || data.conversationId, {
+    message: "user_or_conversation_required",
+    path: ["userId"]
+  });
+
+type AuditEvent = {
+  id: string;
+  tenantId: string;
+  actorId: string;
+  action: string;
+  targetId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+};
 
 const agentSchema = z.object({
   tenantId: z.string().min(1),
@@ -69,12 +132,37 @@ const channelTypeSchema = z.enum([
   "wordpress"
 ]);
 
-const channelSchema = z.object({
-  agentId: z.string().min(1),
-  type: channelTypeSchema,
-  config: z.record(z.unknown()).optional(),
-  enabled: z.boolean().optional()
-});
+const connectorChannelTypes = new Set([
+  "slack",
+  "whatsapp",
+  "email",
+  "zendesk",
+  "salesforce"
+]);
+
+const channelSchema = z
+  .object({
+    agentId: z.string().min(1),
+    type: channelTypeSchema,
+    config: z.record(z.unknown()).optional(),
+    enabled: z.boolean().optional()
+  })
+  .superRefine((data, ctx) => {
+    if (!connectorChannelTypes.has(data.type)) {
+      return;
+    }
+    const authToken =
+      data.config && typeof data.config.authToken === "string"
+        ? data.config.authToken.trim()
+        : "";
+    if (!authToken) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "auth_token_required",
+        path: ["config", "authToken"]
+      });
+    }
+  });
 
 const channelUpdateSchema = z.object({
   config: z.record(z.unknown()).optional(),
@@ -90,7 +178,155 @@ type Channel = z.infer<typeof channelSchema> & {
 
 type ChannelConfig = Record<string, unknown> & {
   allowedDomains?: string[];
+  authToken?: string;
+  verifyToken?: string;
 };
+
+type InboundMessage = {
+  message: string;
+  userId?: string;
+  threadKey?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type WebhookParseResult =
+  | { kind: "message"; message: InboundMessage }
+  | { kind: "challenge"; challenge: string }
+  | { kind: "ignored" }
+  | { kind: "error"; error: string };
+
+const actionTypeSchema = z.enum([
+  "human_escalation",
+  "web_search",
+  "slack_notify",
+  "ticket_create",
+  "lead_capture",
+  "schedule",
+  "billing",
+  "stripe_billing",
+  "calendly_schedule",
+  "calcom_schedule",
+  "salesforce_ticket",
+  "shopify_action",
+  "custom_api"
+]);
+
+const actionSchema = z.object({
+  agentId: z.string().min(1),
+  type: actionTypeSchema,
+  config: z.record(z.unknown()).optional(),
+  enabled: z.boolean().optional()
+});
+
+const actionExecutionStatusSchema = z.enum(["success", "failed"]);
+
+type Action = z.infer<typeof actionSchema> & {
+  id: string;
+  enabled: boolean;
+  createdAt: string;
+  config?: Record<string, unknown>;
+};
+
+type ActionExecution = {
+  id: string;
+  actionId: string;
+  type: z.infer<typeof actionTypeSchema>;
+  status: z.infer<typeof actionExecutionStatusSchema>;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  error?: string;
+  createdAt: string;
+};
+
+const conversationStatusSchema = z.enum(["open", "closed", "escalated"]);
+
+const conversationSchema = z.object({
+  agentId: z.string().min(1),
+  channelId: z.string().min(1).optional(),
+  userId: z.string().min(1).optional()
+});
+
+type Conversation = z.infer<typeof conversationSchema> & {
+  id: string;
+  status: z.infer<typeof conversationStatusSchema>;
+  startedAt: string;
+  endedAt?: string;
+};
+
+const metricEventTypeSchema = z.enum([
+  "conversation_started",
+  "conversation_resolved",
+  "conversation_escalated",
+  "message_sent",
+  "feedback_received",
+  "retrieval_performed",
+  "action_executed",
+  "ingestion_completed"
+]);
+
+const metricEventInputSchema = z
+  .object({
+    type: metricEventTypeSchema,
+    tenantId: z.string().min(1).optional(),
+    agentId: z.string().min(1).optional(),
+    channelId: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    timestamp: z.string().datetime().optional(),
+    value: z.number().optional(),
+    metadata: z.record(z.unknown()).optional()
+  })
+  .refine((data) => data.tenantId || data.agentId || data.channelId, {
+    message: "metric_scope_required",
+    path: ["tenantId"]
+  });
+
+type MetricEvent = Omit<z.infer<typeof metricEventInputSchema>, "timestamp"> & {
+  id: string;
+  timestamp: string;
+};
+
+const slackConfigSchema = z.object({
+  channel: z.string().min(1),
+  fallbackChannel: z.string().min(1).optional()
+});
+
+const slackPayloadSchema = z.object({
+  message: z.string().min(1),
+  metadata: z.record(z.unknown()).optional(),
+  useFallback: z.boolean().optional()
+});
+
+const ticketConfigSchema = z.object({
+  provider: z.enum(["zendesk", "salesforce", "freshdesk", "custom"]).optional(),
+  defaultPriority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+  defaultTags: z.array(z.string().min(1)).optional()
+});
+
+const ticketPayloadSchema = z.object({
+  subject: z.string().min(1),
+  description: z.string().min(1),
+  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+  requester: z
+    .object({
+      name: z.string().min(1),
+      email: z.string().email().optional()
+    })
+    .optional(),
+  tags: z.array(z.string().min(1)).optional()
+});
+
+const billingConfigSchema = z.object({
+  currency: z.string().min(3).max(3).optional(),
+  defaultAmount: z.number().positive().optional(),
+  allowCustomAmount: z.boolean().optional()
+});
+
+const billingPayloadSchema = z.object({
+  customerId: z.string().min(1),
+  amount: z.number().positive().optional(),
+  currency: z.string().min(3).max(3).optional(),
+  description: z.string().min(1).optional()
+});
 
 const crawlConfigSchema = z.object({
   agentId: z.string().min(1),
@@ -207,10 +443,273 @@ const normalizeChannelConfig = (
   const allowedDomains = Array.isArray(config.allowedDomains)
     ? config.allowedDomains.filter((item): item is string => typeof item === "string")
     : undefined;
+  const authToken =
+    typeof config.authToken === "string" ? config.authToken.trim() : undefined;
+  const verifyToken =
+    typeof config.verifyToken === "string" ? config.verifyToken.trim() : undefined;
   return {
     ...config,
-    allowedDomains: normalizeAllowedDomains(allowedDomains)
+    allowedDomains: normalizeAllowedDomains(allowedDomains),
+    authToken: authToken || undefined,
+    verifyToken: verifyToken || undefined
   };
+};
+
+const pickFirstString = (...values: Array<unknown>) => {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const getAuthTokenFromHeaders = (headers: Record<string, unknown>) => {
+  const authHeader = headers.authorization;
+  if (typeof authHeader === "string") {
+    const match = authHeader.match(/^Bearer\s+(.+)$/iu);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+  const channelToken = headers["x-channel-token"];
+  if (typeof channelToken === "string") {
+    return channelToken.trim();
+  }
+  const ralphToken = headers["x-ralph-token"];
+  if (typeof ralphToken === "string") {
+    return ralphToken.trim();
+  }
+  return undefined;
+};
+
+const parseSlackWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const type = getString(payload.type);
+  if (type === "url_verification") {
+    const challenge = getString(payload.challenge);
+    if (!challenge) {
+      return { kind: "error", error: "slack_challenge_missing" };
+    }
+    return { kind: "challenge", challenge };
+  }
+  const event = getRecord(payload.event);
+  if (!event) {
+    return { kind: "error", error: "slack_event_missing" };
+  }
+  const eventType = getString(event.type);
+  if (!eventType) {
+    return { kind: "error", error: "slack_event_type_missing" };
+  }
+  if (eventType !== "message" && eventType !== "app_mention") {
+    return { kind: "ignored" };
+  }
+  const botId = getString(event.bot_id);
+  if (botId) {
+    return { kind: "ignored" };
+  }
+  const text = getString(event.text);
+  if (!text) {
+    return { kind: "error", error: "slack_message_missing" };
+  }
+  const userId = getString(event.user);
+  const threadKey = pickFirstString(event.thread_ts, event.ts);
+  return {
+    kind: "message",
+    message: {
+      message: text,
+      userId,
+      threadKey,
+      metadata: {
+        slackEventId: getString(payload.event_id)
+      }
+    }
+  };
+};
+
+const extractWhatsAppMessages = (payload: Record<string, unknown>) => {
+  if (Array.isArray(payload.messages)) {
+    return payload.messages.map((item) => getRecord(item)).filter(Boolean);
+  }
+  const entries = getArray(payload.entry);
+  if (!entries) {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const entryRecord = getRecord(entry);
+    if (!entryRecord) {
+      continue;
+    }
+    const changes = getArray(entryRecord.changes);
+    if (!changes) {
+      continue;
+    }
+    for (const change of changes) {
+      const changeRecord = getRecord(change);
+      const value = changeRecord ? getRecord(changeRecord.value) : undefined;
+      const messages = value ? getArray(value.messages) : undefined;
+      if (messages && messages.length > 0) {
+        return messages.map((item) => getRecord(item)).filter(Boolean);
+      }
+    }
+  }
+  return undefined;
+};
+
+const parseWhatsAppWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const messages = extractWhatsAppMessages(payload);
+  const message = messages && messages.length > 0 ? messages[0] : undefined;
+  if (!message) {
+    return { kind: "error", error: "whatsapp_message_missing" };
+  }
+  const textRecord = getRecord(message.text);
+  const text = pickFirstString(textRecord?.body, message.body);
+  if (!text) {
+    return { kind: "error", error: "whatsapp_text_missing" };
+  }
+  const userId = getString(message.from);
+  const context = getRecord(message.context);
+  const threadKey = pickFirstString(context?.id, userId);
+  return {
+    kind: "message",
+    message: {
+      message: text,
+      userId,
+      threadKey,
+      metadata: {
+        whatsappMessageId: getString(message.id)
+      }
+    }
+  };
+};
+
+const parseEmailWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const subject = pickFirstString(payload.subject, payload.Subject);
+  const text = pickFirstString(
+    payload.text,
+    payload["stripped-text"],
+    payload["body-plain"],
+    payload.plain
+  );
+  const html = pickFirstString(payload.html, payload["body-html"]);
+  const message = [subject, text ?? html].filter(Boolean).join("\n\n").trim();
+  if (!message) {
+    return { kind: "error", error: "email_message_missing" };
+  }
+  const from = pickFirstString(payload.from, payload.sender);
+  const threadKey = pickFirstString(payload["message-id"], payload["in-reply-to"], from);
+  return {
+    kind: "message",
+    message: {
+      message,
+      userId: from,
+      threadKey,
+      metadata: {
+        subject
+      }
+    }
+  };
+};
+
+const parseZendeskWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const ticket =
+    getRecord(payload.ticket) ??
+    getRecord(payload.current_ticket) ??
+    getRecord(getRecord(payload.event)?.ticket);
+  if (!ticket) {
+    return { kind: "error", error: "zendesk_ticket_missing" };
+  }
+  const subject = pickFirstString(ticket.subject, ticket.title);
+  const description = pickFirstString(
+    ticket.description,
+    getRecord(ticket.comment)?.body
+  );
+  const message = [subject, description].filter(Boolean).join("\n\n").trim();
+  if (!message) {
+    return { kind: "error", error: "zendesk_message_missing" };
+  }
+  const requester = getRecord(ticket.requester);
+  const userId = pickFirstString(requester?.email, requester?.name);
+  const threadKey = pickFirstString(ticket.id, ticket.external_id);
+  return {
+    kind: "message",
+    message: {
+      message,
+      userId,
+      threadKey,
+      metadata: {
+        ticketId: ticket.id
+      }
+    }
+  };
+};
+
+const parseSalesforceWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const caseRecord =
+    getRecord(payload.Case) ??
+    getRecord(payload.case) ??
+    getRecord(payload.record) ??
+    payload;
+  const subject = pickFirstString(caseRecord.Subject, caseRecord.subject);
+  const description = pickFirstString(
+    caseRecord.Description,
+    caseRecord.description
+  );
+  const message = [subject, description].filter(Boolean).join("\n\n").trim();
+  if (!message) {
+    return { kind: "error", error: "salesforce_message_missing" };
+  }
+  const contact = getRecord(caseRecord.Contact) ?? getRecord(caseRecord.contact);
+  const userId = pickFirstString(contact?.Email, contact?.email);
+  const threadKey = pickFirstString(caseRecord.Id, caseRecord.id);
+  return {
+    kind: "message",
+    message: {
+      message,
+      userId,
+      threadKey,
+      metadata: {
+        caseId: caseRecord.Id ?? caseRecord.id
+      }
+    }
+  };
+};
+
+const parseChannelWebhookPayload = (
+  channelType: z.infer<typeof channelTypeSchema>,
+  payload: Record<string, unknown>
+): WebhookParseResult => {
+  switch (channelType) {
+    case "slack":
+      return parseSlackWebhook(payload);
+    case "whatsapp":
+      return parseWhatsAppWebhook(payload);
+    case "email":
+      return parseEmailWebhook(payload);
+    case "zendesk":
+      return parseZendeskWebhook(payload);
+    case "salesforce":
+      return parseSalesforceWebhook(payload);
+    default:
+      return { kind: "error", error: "channel_not_supported" };
+  }
+};
+
+const requireConnectorAuth = (
+  channel: Channel,
+  headers: Record<string, unknown>
+) => {
+  const authToken =
+    channel.config && typeof channel.config.authToken === "string"
+      ? channel.config.authToken
+      : undefined;
+  if (!authToken) {
+    return { ok: false, statusCode: 403, error: "channel_auth_not_configured" };
+  }
+  const provided = getAuthTokenFromHeaders(headers);
+  if (!provided || provided !== authToken) {
+    return { ok: false, statusCode: 401, error: "channel_unauthorized" };
+  }
+  return { ok: true as const };
 };
 
 const getRequestOriginHost = (request: { headers: Record<string, unknown> }) => {
@@ -239,359 +738,143 @@ const isDomainAllowed = (allowedDomains: string[], originHost: string) => {
   });
 };
 
-const buildWidgetScript = () => `
-(function () {
-  function createWidget(options) {
-    var channelId = options.channelId;
-    var apiBase = options.apiBase;
-    var rootId = "ralph-widget-" + channelId;
-    if (document.getElementById(rootId)) {
-      return;
-    }
+class ActionExecutionError extends Error {
+  statusCode: number;
 
-    var style = document.createElement("style");
-    style.textContent =
-      "#" + rootId + "{position:fixed;bottom:24px;right:24px;font-family:'SF Pro Text',system-ui,sans-serif;z-index:2147483647;}" +
-      "#" + rootId + " .rw-button{background:#0f3d2e;color:#fff;border:none;border-radius:999px;padding:12px 18px;box-shadow:0 10px 30px rgba(15,61,46,0.3);cursor:pointer;font-weight:600;}" +
-      "#" + rootId + " .rw-panel{width:320px;max-height:420px;background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(17,24,39,0.2);overflow:hidden;display:none;flex-direction:column;}" +
-      "#" + rootId + " .rw-header{background:#0f3d2e;color:#fff;padding:12px 16px;font-weight:600;display:flex;justify-content:space-between;align-items:center;}" +
-      "#" + rootId + " .rw-body{padding:12px 16px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:10px;background:#f6f7f9;}" +
-      "#" + rootId + " .rw-message{padding:10px 12px;border-radius:12px;max-width:85%;font-size:14px;line-height:1.4;}" +
-      "#" + rootId + " .rw-user{background:#0f3d2e;color:#fff;align-self:flex-end;}" +
-      "#" + rootId + " .rw-assistant{background:#fff;color:#111827;align-self:flex-start;border:1px solid #e5e7eb;}" +
-      "#" + rootId + " .rw-input{display:flex;gap:8px;padding:12px 16px;border-top:1px solid #e5e7eb;background:#fff;}" +
-      "#" + rootId + " .rw-input input{flex:1;border:1px solid #e5e7eb;border-radius:10px;padding:8px 10px;font-size:14px;}" +
-      "#" + rootId + " .rw-input button{background:#0f3d2e;color:#fff;border:none;border-radius:10px;padding:8px 12px;font-weight:600;cursor:pointer;}";
-    document.head.appendChild(style);
+  constructor(message: string, statusCode = 400) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
-    var root = document.createElement("div");
-    root.id = rootId;
-    var button = document.createElement("button");
-    button.className = "rw-button";
-    button.textContent = "Chat with support";
-    var panel = document.createElement("div");
-    panel.className = "rw-panel";
-    var header = document.createElement("div");
-    header.className = "rw-header";
-    header.innerHTML = "<span>Ralph Support</span>";
-    var close = document.createElement("button");
-    close.textContent = "x";
-    close.style.background = "transparent";
-    close.style.border = "none";
-    close.style.color = "#fff";
-    close.style.fontSize = "18px";
-    close.style.cursor = "pointer";
-    header.appendChild(close);
-    var body = document.createElement("div");
-    body.className = "rw-body";
-    var inputWrap = document.createElement("div");
-    inputWrap.className = "rw-input";
-    var input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "Ask about returns, shipping, pricing...";
-    var send = document.createElement("button");
-    send.textContent = "Send";
-    inputWrap.appendChild(input);
-    inputWrap.appendChild(send);
+class RequestError extends Error {
+  statusCode: number;
 
-    panel.appendChild(header);
-    panel.appendChild(body);
-    panel.appendChild(inputWrap);
-    root.appendChild(button);
-    root.appendChild(panel);
-    document.body.appendChild(root);
+  constructor(message: string, statusCode = 400) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
-    function toggle(open) {
-      panel.style.display = open ? "flex" : "none";
-      button.style.display = open ? "none" : "inline-flex";
-    }
+const parseWithSchema = <T>(
+  schema: z.ZodSchema<T>,
+  value: unknown,
+  errorCode: string
+) => {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new ActionExecutionError(errorCode, 400);
+  }
+  return parsed.data;
+};
 
-    button.addEventListener("click", function () {
-      toggle(true);
-      input.focus();
-    });
-    close.addEventListener("click", function () {
-      toggle(false);
-    });
+const normalizeActionConfig = (
+  type: z.infer<typeof actionTypeSchema>,
+  config?: Record<string, unknown>
+) => {
+  switch (type) {
+    case "slack_notify":
+      return parseWithSchema(slackConfigSchema, config ?? {}, "invalid_slack_config");
+    case "ticket_create":
+    case "salesforce_ticket":
+    case "human_escalation":
+      return parseWithSchema(ticketConfigSchema, config ?? {}, "invalid_ticket_config");
+    case "stripe_billing":
+    case "billing":
+      return parseWithSchema(billingConfigSchema, config ?? {}, "invalid_billing_config");
+    default:
+      return config ?? {};
+  }
+};
 
-    function addMessage(text, role) {
-      var item = document.createElement("div");
-      item.className = "rw-message " + (role === "user" ? "rw-user" : "rw-assistant");
-      item.textContent = text;
-      body.appendChild(item);
-      body.scrollTop = body.scrollHeight;
-      return item;
-    }
-
-    function streamChat(message, onToken, onDone, onError) {
-      fetch(apiBase + "/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelId: channelId, message: message, stream: true })
-      })
-        .then(function (response) {
-          if (!response.ok) {
-            throw new Error("chat_failed");
+const executeAction = (
+  action: Action,
+  payload: Record<string, unknown> | undefined
+) => {
+  const createdAt = new Date().toISOString();
+  switch (action.type) {
+    case "slack_notify": {
+      const config = parseWithSchema(slackConfigSchema, action.config ?? {}, "invalid_slack_config");
+      const input = parseWithSchema(slackPayloadSchema, payload ?? {}, "invalid_slack_payload");
+      const channel =
+        input.useFallback && config.fallbackChannel ? config.fallbackChannel : config.channel;
+      return {
+        input,
+        output: {
+          delivery: {
+            channel,
+            text: input.message,
+            metadata: input.metadata,
+            deliveredAt: createdAt
           }
-          if (!response.body) {
-            return response.json().then(function (data) {
-              onDone(data.message || "");
-            });
-          }
-          var reader = response.body.getReader();
-          var decoder = new TextDecoder();
-          var buffer = "";
-
-          function read() {
-            return reader.read().then(function (result) {
-              if (result.done) {
-                onDone();
-                return;
-              }
-              buffer += decoder.decode(result.value, { stream: true });
-              var parts = buffer.split("\\n\\n");
-              buffer = parts.pop() || "";
-              parts.forEach(function (part) {
-                part.split("\\n").forEach(function (line) {
-                  if (!line.startsWith("data:")) {
-                    return;
-                  }
-                  var payload = line.replace("data: ", "");
-                  try {
-                    var parsed = JSON.parse(payload);
-                    if (parsed.token) {
-                      onToken(parsed.token);
-                    }
-                    if (parsed.done && parsed.response && parsed.response.message) {
-                      onDone(parsed.response.message);
-                    }
-                  } catch (error) {
-                    onError(error);
-                  }
-                });
-              });
-              return read();
-            });
-          }
-
-          return read();
-        })
-        .catch(function (error) {
-          onError(error);
-        });
-    }
-
-    function sendMessage() {
-      var message = input.value.trim();
-      if (!message) {
-        return;
-      }
-      input.value = "";
-      addMessage(message, "user");
-      var assistantBubble = addMessage("...", "assistant");
-
-      streamChat(
-        message,
-        function (token) {
-          assistantBubble.textContent =
-          assistantBubble.textContent === "..."
-              ? token
-              : assistantBubble.textContent + " " + token;
-          body.scrollTop = body.scrollHeight;
-        },
-        function (finalMessage) {
-          if (finalMessage) {
-            assistantBubble.textContent = finalMessage;
-          }
-        },
-        function () {
-          assistantBubble.textContent =
-            "We hit a snag. Please try again or reach the team directly.";
         }
+      };
+    }
+    case "ticket_create":
+    case "salesforce_ticket":
+    case "human_escalation": {
+      const config = parseWithSchema(ticketConfigSchema, action.config ?? {}, "invalid_ticket_config");
+      const input = parseWithSchema(ticketPayloadSchema, payload ?? {}, "invalid_ticket_payload");
+      const provider =
+        action.type === "salesforce_ticket"
+          ? "salesforce"
+          : config.provider ?? "custom";
+      const priority = input.priority ?? config.defaultPriority ?? "normal";
+      const tags = Array.from(
+        new Set([...(config.defaultTags ?? []), ...(input.tags ?? [])])
       );
+      return {
+        input,
+        output: {
+          ticket: {
+            id: `ticket_${crypto.randomUUID()}`,
+            provider,
+            status: "open",
+            subject: input.subject,
+            description: input.description,
+            priority,
+            requester: input.requester,
+            tags: tags.length > 0 ? tags : undefined,
+            createdAt
+          }
+        }
+      };
     }
-
-    send.addEventListener("click", sendMessage);
-    input.addEventListener("keydown", function (event) {
-      if (event.key === "Enter") {
-        sendMessage();
+    case "stripe_billing":
+    case "billing": {
+      const config = parseWithSchema(billingConfigSchema, action.config ?? {}, "invalid_billing_config");
+      const input = parseWithSchema(billingPayloadSchema, payload ?? {}, "invalid_billing_payload");
+      const allowCustomAmount = config.allowCustomAmount ?? true;
+      const amount = input.amount ?? config.defaultAmount;
+      if (amount === undefined) {
+        throw new ActionExecutionError("billing_amount_required", 400);
       }
-    });
-  }
-
-  var script = document.currentScript || document.querySelector("script[data-channel]");
-  if (!script) {
-    return;
-  }
-  var channelId = script.getAttribute("data-channel");
-  if (!channelId) {
-    return;
-  }
-  var apiBase = script.getAttribute("data-api-base");
-  if (!apiBase) {
-    try {
-      apiBase = new URL(script.src).origin;
-    } catch (error) {
-      apiBase = "";
+      if (input.amount !== undefined && !allowCustomAmount) {
+        throw new ActionExecutionError("custom_amount_not_allowed", 400);
+      }
+      const currency = (input.currency ?? config.currency ?? "NOK").toUpperCase();
+      const invoiceId = `invoice_${crypto.randomUUID()}`;
+      return {
+        input,
+        output: {
+          invoice: {
+            id: invoiceId,
+            customerId: input.customerId,
+            amount,
+            currency,
+            status: "requires_payment",
+            description: input.description,
+            createdAt,
+            paymentLink: `https://billing.ralph.example/invoices/${invoiceId}`
+          }
+        }
+      };
     }
+    default:
+      throw new ActionExecutionError("action_type_not_supported", 400);
   }
-  if (!apiBase) {
-    return;
-  }
-  createWidget({ channelId: channelId, apiBase: apiBase });
-})();
-`;
+};
 
-const buildHelpPage = (channelId: string) => `
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ralph Support</title>
-    <style>
-      body { margin: 0; font-family: "SF Pro Text", system-ui, sans-serif; background: #f6f7f9; color: #0f172a; }
-      .hero { padding: 32px 40px; background: linear-gradient(120deg, #0f3d2e, #1f6f5c); color: #fff; }
-      .hero h1 { margin: 0 0 8px; font-size: 28px; }
-      .hero p { margin: 0; max-width: 560px; opacity: 0.9; }
-      .chat-shell { max-width: 780px; margin: -32px auto 48px; background: #fff; border-radius: 20px; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.2); overflow: hidden; }
-      .chat-body { padding: 24px; min-height: 320px; display: flex; flex-direction: column; gap: 12px; background: #f8fafc; }
-      .chat-message { padding: 12px 14px; border-radius: 14px; font-size: 15px; line-height: 1.4; max-width: 80%; }
-      .chat-user { background: #0f3d2e; color: #fff; align-self: flex-end; }
-      .chat-assistant { background: #fff; color: #0f172a; border: 1px solid #e2e8f0; align-self: flex-start; }
-      .chat-input { display: flex; gap: 12px; padding: 16px 24px; border-top: 1px solid #e2e8f0; }
-      .chat-input input { flex: 1; padding: 10px 12px; border-radius: 12px; border: 1px solid #e2e8f0; font-size: 15px; }
-      .chat-input button { background: #0f3d2e; color: #fff; border: none; border-radius: 12px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
-    </style>
-  </head>
-  <body>
-    <section class="hero">
-      <h1>How can we help?</h1>
-      <p>Ask about shipping, billing, or policies. The AI assistant will pull answers from your knowledge base.</p>
-    </section>
-    <section class="chat-shell" data-channel="${channelId}">
-      <div class="chat-body" id="chat-body"></div>
-      <div class="chat-input">
-        <input id="chat-input" type="text" placeholder="Ask your question..." />
-        <button id="chat-send" type="button">Send</button>
-      </div>
-    </section>
-    <script>
-      (function () {
-        var channelId = "${channelId}";
-        var apiBase = window.location.origin;
-        var body = document.getElementById("chat-body");
-        var input = document.getElementById("chat-input");
-        var send = document.getElementById("chat-send");
-
-        function addMessage(text, role) {
-          var item = document.createElement("div");
-          item.className = "chat-message " + (role === "user" ? "chat-user" : "chat-assistant");
-          item.textContent = text;
-          body.appendChild(item);
-          body.scrollTop = body.scrollHeight;
-          return item;
-        }
-
-        function streamChat(message, onToken, onDone, onError) {
-          fetch(apiBase + "/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ channelId: channelId, message: message, stream: true })
-          })
-            .then(function (response) {
-              if (!response.ok) {
-                throw new Error("chat_failed");
-              }
-              if (!response.body) {
-                return response.json().then(function (data) {
-                  onDone(data.message || "");
-                });
-              }
-              var reader = response.body.getReader();
-              var decoder = new TextDecoder();
-              var buffer = "";
-
-              function read() {
-                return reader.read().then(function (result) {
-                  if (result.done) {
-                    onDone();
-                    return;
-                  }
-                  buffer += decoder.decode(result.value, { stream: true });
-                  var parts = buffer.split("\\n\\n");
-                  buffer = parts.pop() || "";
-                  parts.forEach(function (part) {
-                    part.split("\\n").forEach(function (line) {
-                      if (!line.startsWith("data:")) {
-                        return;
-                      }
-                      var payload = line.replace("data: ", "");
-                      try {
-                        var parsed = JSON.parse(payload);
-                        if (parsed.token) {
-                          onToken(parsed.token);
-                        }
-                        if (parsed.done && parsed.response && parsed.response.message) {
-                          onDone(parsed.response.message);
-                        }
-                      } catch (error) {
-                        onError(error);
-                      }
-                    });
-                  });
-                  return read();
-                });
-              }
-
-              return read();
-            })
-            .catch(function (error) {
-              onError(error);
-            });
-        }
-
-        function sendMessage() {
-          var message = input.value.trim();
-          if (!message) {
-            return;
-          }
-          input.value = "";
-          addMessage(message, "user");
-          var assistantBubble = addMessage("...", "assistant");
-
-          streamChat(
-            message,
-            function (token) {
-              assistantBubble.textContent =
-                assistantBubble.textContent === "..."
-                  ? token
-                  : assistantBubble.textContent + " " + token;
-              body.scrollTop = body.scrollHeight;
-            },
-            function (finalMessage) {
-              if (finalMessage) {
-                assistantBubble.textContent = finalMessage;
-              }
-            },
-            function () {
-              assistantBubble.textContent =
-                "We hit a snag. Please try again or reach the team directly.";
-            }
-          );
-        }
-
-        send.addEventListener("click", sendMessage);
-        input.addEventListener("keydown", function (event) {
-          if (event.key === "Enter") {
-            sendMessage();
-          }
-        });
-      })();
-    </script>
-  </body>
-</html>
-`;
 export const buildServer = async (options?: { vectorStoreDir?: string }) => {
   const fastify = Fastify({ logger: true });
 
@@ -614,14 +897,709 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
   const vectorStore = createRegionalVectorStore(vectorStoreDir);
 
   const tenants = new Map<string, Tenant>();
+  const tenantMembers = new Map<string, TenantMember>();
+  const retentionPolicies = new Map<string, RetentionPolicy>();
   const agents = new Map<string, Agent>();
   const sources = new Map<string, Source>();
   const channels = new Map<string, Channel>();
+  const actions = new Map<string, Action>();
+  const actionExecutions = new Map<string, ActionExecution>();
+  const conversations = new Map<string, Conversation>();
   const ingestionJobs = new Map<string, IngestionJob>();
+  const channelThreads = new Map<string, string>();
+  const metricEvents: MetricEvent[] = [];
+  const maxMetricEvents = 5000;
+  const auditEvents: AuditEvent[] = [];
+  const maxAuditEvents = 5000;
+  const defaultRetentionDays = 30;
+
+  const ensureMetricCapacity = () => {
+    if (metricEvents.length <= maxMetricEvents) {
+      return;
+    }
+    metricEvents.splice(0, metricEvents.length - maxMetricEvents);
+  };
+
+  const ensureAuditCapacity = () => {
+    if (auditEvents.length <= maxAuditEvents) {
+      return;
+    }
+    auditEvents.splice(0, auditEvents.length - maxAuditEvents);
+  };
+
+  const recordAuditEvent = (input: {
+    tenantId: string;
+    actorId: string;
+    action: string;
+    targetId?: string;
+    metadata?: Record<string, unknown>;
+  }) => {
+    const event: AuditEvent = {
+      id: `audit_${crypto.randomUUID()}`,
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      action: input.action,
+      targetId: input.targetId,
+      metadata: input.metadata,
+      createdAt: new Date().toISOString()
+    };
+    auditEvents.push(event);
+    ensureAuditCapacity();
+    return event;
+  };
+
+  const getUserIdFromRequest = (request: { headers: Record<string, unknown> }) => {
+    const headerValue = request.headers["x-user-id"] ?? request.headers["x-actor-id"];
+    return typeof headerValue === "string" && headerValue.trim()
+      ? headerValue.trim()
+      : undefined;
+  };
+
+  const requireUserId = (request: { headers: Record<string, unknown> }, reply: any) => {
+    const userId = getUserIdFromRequest(request);
+    if (!userId) {
+      reply.code(401).send({ error: "user_required" });
+      return undefined;
+    }
+    return userId;
+  };
+
+  const roleRank: Record<TenantRole, number> = {
+    viewer: 1,
+    member: 2,
+    admin: 3,
+    owner: 4
+  };
+
+  const isRoleAtLeast = (role: TenantRole, required: TenantRole) =>
+    roleRank[role] >= roleRank[required];
+
+  const getTenantMemberKey = (tenantId: string, userId: string) => `${tenantId}:${userId}`;
+
+  const getTenantIdsForUser = (userId: string) => {
+    const ids = new Set<string>();
+    for (const member of tenantMembers.values()) {
+      if (member.userId === userId) {
+        ids.add(member.tenantId);
+      }
+    }
+    return ids;
+  };
+
+  const getTenantIdForAgent = (agentId: string) => agents.get(agentId)?.tenantId;
+  const getTenantIdForChannel = (channelId: string) => {
+    const channel = channels.get(channelId);
+    if (!channel) {
+      return undefined;
+    }
+    return getTenantIdForAgent(channel.agentId);
+  };
+  const getTenantIdForSource = (sourceId: string) => {
+    const source = sources.get(sourceId);
+    if (!source) {
+      return undefined;
+    }
+    return getTenantIdForAgent(source.agentId);
+  };
+  const getTenantIdForAction = (actionId: string) => {
+    const action = actions.get(actionId);
+    if (!action) {
+      return undefined;
+    }
+    return getTenantIdForAgent(action.agentId);
+  };
+  const getTenantIdForConversation = (conversationId: string) => {
+    const conversation = conversations.get(conversationId);
+    if (!conversation) {
+      return undefined;
+    }
+    return getTenantIdForAgent(conversation.agentId);
+  };
+  const getTenantIdForIngestionJob = (jobId: string) => {
+    const job = ingestionJobs.get(jobId);
+    if (!job) {
+      return undefined;
+    }
+    return getTenantIdForSource(job.sourceId);
+  };
+
+  const resolveAgentId = (input: { agentId?: string; channelId?: string }) => {
+    if (input.agentId) {
+      return input.agentId;
+    }
+    if (input.channelId) {
+      return channels.get(input.channelId)?.agentId;
+    }
+    return undefined;
+  };
+
+  const resolveTenantId = (input: { tenantId?: string; agentId?: string; channelId?: string }) => {
+    if (input.tenantId) {
+      return input.tenantId;
+    }
+    const agentId = resolveAgentId(input);
+    if (!agentId) {
+      return undefined;
+    }
+    return agents.get(agentId)?.tenantId;
+  };
+
+  const recordMetricEvent = (
+    input: z.infer<typeof metricEventInputSchema> & { timestamp?: string }
+  ) => {
+    const agentId = resolveAgentId(input);
+    const tenantId = resolveTenantId({ ...input, agentId });
+    if (!tenantId) {
+      return undefined;
+    }
+    const event: MetricEvent = {
+      id: `metric_${crypto.randomUUID()}`,
+      type: input.type,
+      tenantId,
+      agentId,
+      channelId: input.channelId,
+      conversationId: input.conversationId,
+      timestamp: input.timestamp ?? new Date().toISOString(),
+      value: input.value,
+      metadata: input.metadata
+    };
+    metricEvents.push(event);
+    ensureMetricCapacity();
+    return event;
+  };
+
+  const removeConversations = (tenantId: string, conversationIds: Set<string>) => {
+    if (conversationIds.size === 0) {
+      return { removedConversations: 0, removedMetrics: 0 };
+    }
+    for (const conversationId of conversationIds) {
+      conversations.delete(conversationId);
+    }
+    for (const [key, conversationId] of channelThreads.entries()) {
+      if (conversationIds.has(conversationId)) {
+        channelThreads.delete(key);
+      }
+    }
+    let removedMetrics = 0;
+    for (let index = metricEvents.length - 1; index >= 0; index -= 1) {
+      const event = metricEvents[index];
+      if (event.tenantId !== tenantId) {
+        continue;
+      }
+      if (event.conversationId && conversationIds.has(event.conversationId)) {
+        metricEvents.splice(index, 1);
+        removedMetrics += 1;
+      }
+    }
+    return { removedConversations: conversationIds.size, removedMetrics };
+  };
+
+  const applyRetentionForTenant = (tenantId: string, actorId: string) => {
+    const policy =
+      retentionPolicies.get(tenantId) ??
+      ({
+        tenantId,
+        days: defaultRetentionDays,
+        enabled: true,
+        updatedAt: new Date().toISOString(),
+        updatedBy: "system"
+      } satisfies RetentionPolicy);
+    if (!retentionPolicies.has(tenantId)) {
+      retentionPolicies.set(tenantId, policy);
+    }
+    if (!policy.enabled || policy.days < 0) {
+      return { removedConversations: 0, removedMetrics: 0 };
+    }
+    const cutoff = Date.now() - policy.days * 24 * 60 * 60 * 1000;
+    const expired = new Set<string>();
+    for (const conversation of conversations.values()) {
+      const conversationTenantId = getTenantIdForAgent(conversation.agentId);
+      if (conversationTenantId !== tenantId) {
+        continue;
+      }
+      const timestamp = new Date(conversation.endedAt ?? conversation.startedAt).getTime();
+      if (!Number.isFinite(timestamp)) {
+        continue;
+      }
+      if (timestamp <= cutoff) {
+        expired.add(conversation.id);
+      }
+    }
+    if (expired.size === 0) {
+      return { removedConversations: 0, removedMetrics: 0 };
+    }
+    const removed = removeConversations(tenantId, expired);
+    recordAuditEvent({
+      tenantId,
+      actorId,
+      action: "retention.purged",
+      metadata: {
+        cutoff: new Date(cutoff).toISOString(),
+        removedConversations: removed.removedConversations,
+        removedMetrics: removed.removedMetrics
+      }
+    });
+    return removed;
+  };
+
+  const requireTenantRole = (
+    request: { headers: Record<string, unknown> },
+    reply: any,
+    tenantId: string,
+    requiredRole: TenantRole
+  ) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return undefined;
+    }
+    const membership = tenantMembers.get(getTenantMemberKey(tenantId, userId));
+    if (!membership) {
+      reply.code(403).send({ error: "tenant_access_denied" });
+      return undefined;
+    }
+    if (!isRoleAtLeast(membership.role, requiredRole)) {
+      reply.code(403).send({ error: "insufficient_role" });
+      return undefined;
+    }
+    applyRetentionForTenant(tenantId, userId);
+    return { userId, membership };
+  };
+
+  const runChatFlow = async (input: {
+    agentId: string;
+    message: string;
+    maxResults?: number;
+    minScore?: number;
+    sourceIds?: string[];
+  }) => {
+    const agent = agents.get(input.agentId);
+    if (!agent) {
+      throw new RequestError("agent_not_found", 404);
+    }
+    const tenant = tenants.get(agent.tenantId);
+    if (!tenant) {
+      throw new RequestError("tenant_not_found", 404);
+    }
+    const queryEmbedding = buildEmbedding(input.message);
+    const minScore = input.minScore ?? 0;
+    const maxResults = input.maxResults ?? 4;
+    const sourceFilter = input.sourceIds ? new Set(input.sourceIds) : undefined;
+    const retrievalMatches = await vectorStore.query(tenant.region, {
+      agentId: input.agentId,
+      queryText: input.message,
+      queryEmbedding,
+      minScore,
+      maxResults,
+      sourceFilter
+    });
+    const context = retrievalMatches.map((item) => ({
+      id: item.chunk.id,
+      sourceId: item.chunk.sourceId,
+      content: item.chunk.content,
+      score: item.score,
+      metadata: item.chunk.metadata
+    }));
+    const prompt = buildChatPrompt({
+      basePrompt: agent.basePrompt,
+      message: input.message,
+      context
+    });
+    const response = buildChatResponse({ message: input.message, context });
+    return { agent, tenant, response, prompt, context };
+  };
+
+  const getOrCreateConversation = (input: {
+    channel: Channel;
+    userId?: string;
+    threadKey?: string;
+  }) => {
+    const threadKey = input.threadKey?.trim();
+    if (threadKey) {
+      const indexKey = `${input.channel.id}:${threadKey}`;
+      const existingId = channelThreads.get(indexKey);
+      if (existingId) {
+        const existing = conversations.get(existingId);
+        if (existing) {
+          return existing;
+        }
+      }
+    }
+    const id = `conversation_${crypto.randomUUID()}`;
+    const conversation: Conversation = {
+      id,
+      agentId: input.channel.agentId,
+      channelId: input.channel.id,
+      userId: input.userId,
+      status: "open",
+      startedAt: new Date().toISOString()
+    };
+    conversations.set(id, conversation);
+    if (threadKey) {
+      channelThreads.set(`${input.channel.id}:${threadKey}`, id);
+    }
+    recordMetricEvent({
+      type: "conversation_started",
+      agentId: conversation.agentId,
+      channelId: conversation.channelId,
+      conversationId: conversation.id,
+      timestamp: conversation.startedAt
+    });
+    return conversation;
+  };
+
+  const buildMetricWindow = (input: { from?: string; to?: string }) => {
+    const to = input.to ? new Date(input.to) : new Date();
+    const from = input.from
+      ? new Date(input.from)
+      : new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return { from, to };
+  };
+
+  const matchesMetricScope = (
+    event: MetricEvent,
+    scope: { tenantId?: string; agentId?: string; channelId?: string }
+  ) => {
+    if (scope.tenantId && event.tenantId !== scope.tenantId) {
+      return false;
+    }
+    if (scope.agentId && event.agentId !== scope.agentId) {
+      return false;
+    }
+    if (scope.channelId && event.channelId !== scope.channelId) {
+      return false;
+    }
+    return true;
+  };
+
+  const selectMetricEvents = (input: {
+    tenantId?: string;
+    agentId?: string;
+    channelId?: string;
+    from?: string;
+    to?: string;
+  }) => {
+    const window = buildMetricWindow(input);
+    const fromTime = window.from.getTime();
+    const toTime = window.to.getTime();
+    const items = metricEvents.filter((event) => {
+      if (!matchesMetricScope(event, input)) {
+        return false;
+      }
+      const timestamp = new Date(event.timestamp).getTime();
+      return timestamp >= fromTime && timestamp <= toTime;
+    });
+    return { items, window };
+  };
+
+  const buildMetricSeries = (events: MetricEvent[], window: { from: Date; to: Date }) => {
+    const start = new Date(Date.UTC(window.from.getUTCFullYear(), window.from.getUTCMonth(), window.from.getUTCDate()));
+    const end = new Date(Date.UTC(window.to.getUTCFullYear(), window.to.getUTCMonth(), window.to.getUTCDate()));
+    const dayMs = 24 * 60 * 60 * 1000;
+    const seriesMap = new Map<string, { date: string; conversations: number; deflections: number; escalations: number }>();
+    for (let current = start.getTime(); current <= end.getTime(); current += dayMs) {
+      const dateKey = new Date(current).toISOString().slice(0, 10);
+      seriesMap.set(dateKey, {
+        date: dateKey,
+        conversations: 0,
+        deflections: 0,
+        escalations: 0
+      });
+    }
+    for (const event of events) {
+      const dateKey = new Date(event.timestamp).toISOString().slice(0, 10);
+      const entry = seriesMap.get(dateKey);
+      if (!entry) {
+        continue;
+      }
+      if (event.type === "conversation_started") {
+        entry.conversations += 1;
+      } else if (event.type === "conversation_resolved") {
+        entry.deflections += 1;
+      } else if (event.type === "conversation_escalated") {
+        entry.escalations += 1;
+      }
+    }
+    return Array.from(seriesMap.values());
+  };
+
+  const buildConversationStats = (events: MetricEvent[]) => {
+    const stats = new Map<
+      string,
+      {
+        conversationId: string;
+        tenantId?: string;
+        agentId?: string;
+        channelId?: string;
+        startedAt?: Date;
+        firstResponseAt?: Date;
+        resolvedAt?: Date;
+        escalatedAt?: Date;
+        lastActivityAt?: Date;
+        intent?: string;
+      }
+    >();
+
+    const ensureConversation = (conversationId: string) => {
+      let entry = stats.get(conversationId);
+      if (!entry) {
+        entry = {
+          conversationId
+        };
+        stats.set(conversationId, entry);
+      }
+      return entry;
+    };
+
+    for (const event of events) {
+      if (!event.conversationId) {
+        continue;
+      }
+      const entry = ensureConversation(event.conversationId);
+      entry.tenantId = entry.tenantId ?? event.tenantId;
+      entry.agentId = entry.agentId ?? event.agentId;
+      entry.channelId = entry.channelId ?? event.channelId;
+      const occurredAt = new Date(event.timestamp);
+      if (!entry.lastActivityAt || occurredAt > entry.lastActivityAt) {
+        entry.lastActivityAt = occurredAt;
+      }
+      if (event.type === "conversation_started") {
+        entry.startedAt = occurredAt;
+      } else if (event.type === "message_sent") {
+        const role = event.metadata && typeof event.metadata.role === "string" ? event.metadata.role : undefined;
+        if (role === "assistant" && !entry.firstResponseAt) {
+          entry.firstResponseAt = occurredAt;
+        }
+      } else if (event.type === "conversation_resolved") {
+        entry.resolvedAt = occurredAt;
+        const intent =
+          event.metadata && typeof event.metadata.intent === "string" ? event.metadata.intent : undefined;
+        if (intent) {
+          entry.intent = intent;
+        }
+      } else if (event.type === "conversation_escalated") {
+        entry.escalatedAt = occurredAt;
+        const intent =
+          event.metadata && typeof event.metadata.intent === "string" ? event.metadata.intent : undefined;
+        if (intent) {
+          entry.intent = intent;
+        }
+      } else if (event.type === "action_executed") {
+        const actionType =
+          event.metadata && typeof event.metadata.actionType === "string"
+            ? event.metadata.actionType
+            : undefined;
+        if (actionType === "human_escalation") {
+          entry.escalatedAt = entry.escalatedAt ?? occurredAt;
+        }
+      }
+    }
+
+    return stats;
+  };
+
+  const buildMetricsSummary = (events: MetricEvent[], window: { from: Date; to: Date }) => {
+    const conversationStats = buildConversationStats(events);
+    let deflected = 0;
+    let escalated = 0;
+    let firstResponseTotal = 0;
+    let firstResponseCount = 0;
+    let resolutionTotal = 0;
+    let resolutionCount = 0;
+
+    for (const entry of conversationStats.values()) {
+      if (entry.escalatedAt) {
+        escalated += 1;
+      } else if (entry.resolvedAt) {
+        deflected += 1;
+      }
+
+      if (entry.startedAt && entry.firstResponseAt) {
+        firstResponseTotal += (entry.firstResponseAt.getTime() - entry.startedAt.getTime()) / 1000;
+        firstResponseCount += 1;
+      }
+
+      const resolutionAt = entry.resolvedAt ?? entry.escalatedAt;
+      if (entry.startedAt && resolutionAt) {
+        resolutionTotal += (resolutionAt.getTime() - entry.startedAt.getTime()) / 1000;
+        resolutionCount += 1;
+      }
+    }
+
+    let retrievalTotal = 0;
+    let retrievalCount = 0;
+    let feedbackTotal = 0;
+    let feedbackCount = 0;
+    let actionCount = 0;
+    let ingestionCount = 0;
+    const intentCounts = new Map<string, number>();
+
+    for (const event of events) {
+      if (event.type === "retrieval_performed") {
+        retrievalCount += 1;
+        const latency =
+          event.metadata && typeof event.metadata.latencyMs === "number"
+            ? event.metadata.latencyMs
+            : typeof event.value === "number"
+              ? event.value
+              : undefined;
+        if (typeof latency === "number") {
+          retrievalTotal += latency;
+        }
+      } else if (event.type === "feedback_received") {
+        const rating =
+          event.metadata && typeof event.metadata.rating === "number"
+            ? event.metadata.rating
+            : undefined;
+        if (typeof rating === "number") {
+          feedbackTotal += rating;
+          feedbackCount += 1;
+        }
+      } else if (event.type === "action_executed") {
+        actionCount += 1;
+      } else if (event.type === "ingestion_completed") {
+        ingestionCount += 1;
+      } else if (
+        (event.type === "conversation_resolved" || event.type === "conversation_escalated") &&
+        event.metadata &&
+        typeof event.metadata.intent === "string"
+      ) {
+        const intent = event.metadata.intent;
+        intentCounts.set(intent, (intentCounts.get(intent) ?? 0) + 1);
+      }
+    }
+
+    const totalConversations = conversationStats.size;
+    const deflectionRate =
+      deflected + escalated > 0 ? deflected / (deflected + escalated) : 0;
+    const avgFirstResponseSeconds =
+      firstResponseCount > 0 ? firstResponseTotal / firstResponseCount : 0;
+    const avgResolutionSeconds =
+      resolutionCount > 0 ? resolutionTotal / resolutionCount : 0;
+    const avgRetrievalLatencyMs =
+      retrievalCount > 0 ? retrievalTotal / retrievalCount : 0;
+    const avgFeedbackRating =
+      feedbackCount > 0 ? feedbackTotal / feedbackCount : 0;
+
+    const topIntents = Array.from(intentCounts.entries())
+      .map(([intent, count]) => ({ intent, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return {
+      window: {
+        from: window.from.toISOString(),
+        to: window.to.toISOString()
+      },
+      totals: {
+        conversations: totalConversations,
+        deflected,
+        escalated,
+        retrievals: retrievalCount,
+        actions: actionCount,
+        ingestionCompleted: ingestionCount,
+        feedbackCount
+      },
+      rates: {
+        deflectionRate,
+        avgFirstResponseSeconds,
+        avgResolutionSeconds,
+        avgRetrievalLatencyMs,
+        avgFeedbackRating
+      },
+      topIntents,
+      series: buildMetricSeries(events, window)
+    };
+  };
+
+  const buildConversationReview = (
+    events: MetricEvent[],
+    window: { from: Date; to: Date },
+    scope: { tenantId?: string; agentId?: string; channelId?: string }
+  ) => {
+    const stats = buildConversationStats(events);
+    const fromTime = window.from.getTime();
+    const toTime = window.to.getTime();
+
+    const isConversationInScope = (conversation: Conversation) => {
+      if (scope.agentId && conversation.agentId !== scope.agentId) {
+        return false;
+      }
+      if (scope.channelId && conversation.channelId !== scope.channelId) {
+        return false;
+      }
+      if (scope.tenantId) {
+        const tenantId = agents.get(conversation.agentId)?.tenantId;
+        if (tenantId !== scope.tenantId) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    for (const conversation of conversations.values()) {
+      if (!isConversationInScope(conversation)) {
+        continue;
+      }
+      const startedAt = new Date(conversation.startedAt);
+      if (startedAt.getTime() < fromTime || startedAt.getTime() > toTime) {
+        continue;
+      }
+      const entry = stats.get(conversation.id);
+      if (!entry) {
+        stats.set(conversation.id, {
+          conversationId: conversation.id,
+          tenantId: agents.get(conversation.agentId)?.tenantId,
+          agentId: conversation.agentId,
+          channelId: conversation.channelId,
+          startedAt,
+          lastActivityAt: startedAt
+        });
+      } else if (!entry.startedAt) {
+        entry.startedAt = startedAt;
+      }
+    }
+
+    const summaries = Array.from(stats.values()).map((entry) => {
+      const status = entry.escalatedAt ? "escalated" : entry.resolvedAt ? "closed" : "open";
+      const firstResponseSeconds =
+        entry.startedAt && entry.firstResponseAt
+          ? (entry.firstResponseAt.getTime() - entry.startedAt.getTime()) / 1000
+          : null;
+      const resolutionAt = entry.resolvedAt ?? entry.escalatedAt;
+      const resolutionSeconds =
+        entry.startedAt && resolutionAt
+          ? (resolutionAt.getTime() - entry.startedAt.getTime()) / 1000
+          : null;
+      return {
+        conversationId: entry.conversationId,
+        tenantId: entry.tenantId,
+        agentId: entry.agentId,
+        channelId: entry.channelId,
+        status,
+        startedAt: entry.startedAt ? entry.startedAt.toISOString() : undefined,
+        firstResponseSeconds,
+        resolutionSeconds,
+        lastActivityAt: entry.lastActivityAt ? entry.lastActivityAt.toISOString() : undefined,
+        intent: entry.intent
+      };
+    });
+
+    summaries.sort((a, b) => {
+      const aTime = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
+      const bTime = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
+      return bTime - aTime;
+    });
+
+    return summaries;
+  };
 
   fastify.get("/health", async () => ({ status: "ok" }));
 
   fastify.post("/tenants", async (request, reply) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
     const data = tenantSchema.parse(request.body);
     const id = `tenant_${crypto.randomUUID()}`;
     const tenant: Tenant = {
@@ -633,15 +1611,264 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       createdAt: new Date().toISOString()
     };
     tenants.set(id, tenant);
+    const member: TenantMember = {
+      id: `member_${crypto.randomUUID()}`,
+      tenantId: id,
+      userId,
+      role: "owner",
+      createdAt: new Date().toISOString()
+    };
+    tenantMembers.set(getTenantMemberKey(id, userId), member);
+    retentionPolicies.set(id, {
+      tenantId: id,
+      days: defaultRetentionDays,
+      enabled: true,
+      updatedAt: new Date().toISOString(),
+      updatedBy: userId
+    });
+    recordAuditEvent({
+      tenantId: id,
+      actorId: userId,
+      action: "tenant.created"
+    });
     return reply.code(201).send(tenant);
   });
 
-  fastify.get("/tenants", async () => ({ items: Array.from(tenants.values()) }));
+  fastify.get("/tenants", async (request, reply) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    return {
+      items: Array.from(tenants.values()).filter((tenant) =>
+        allowedTenantIds.has(tenant.id)
+      )
+    };
+  });
+
+  fastify.get("/tenants/:tenantId/members", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return;
+    }
+    const items = Array.from(tenantMembers.values()).filter(
+      (member) => member.tenantId === tenantId
+    );
+    return { items };
+  });
+
+  fastify.post("/tenants/:tenantId/members", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "admin");
+    if (!access) {
+      return;
+    }
+    const data = tenantMemberInputSchema.parse(request.body);
+    if (data.role === "owner" && access.membership.role !== "owner") {
+      return reply.code(403).send({ error: "owner_required" });
+    }
+    const key = getTenantMemberKey(tenantId, data.userId);
+    const existing = tenantMembers.get(key);
+    const member: TenantMember = existing ?? {
+      id: `member_${crypto.randomUUID()}`,
+      tenantId,
+      userId: data.userId,
+      role: data.role,
+      createdAt: new Date().toISOString()
+    };
+    member.role = data.role;
+    tenantMembers.set(key, member);
+    recordAuditEvent({
+      tenantId,
+      actorId: access.userId,
+      action: existing ? "member.updated" : "member.added",
+      targetId: member.userId,
+      metadata: { role: member.role }
+    });
+    return reply.code(existing ? 200 : 201).send({ member });
+  });
+
+  fastify.get("/tenants/:tenantId/gdpr/retention", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return;
+    }
+    const policy =
+      retentionPolicies.get(tenantId) ??
+      ({
+        tenantId,
+        days: defaultRetentionDays,
+        enabled: true,
+        updatedAt: new Date().toISOString(),
+        updatedBy: "system"
+      } satisfies RetentionPolicy);
+    if (!retentionPolicies.has(tenantId)) {
+      retentionPolicies.set(tenantId, policy);
+    }
+    return { policy };
+  });
+
+  fastify.put("/tenants/:tenantId/gdpr/retention", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "admin");
+    if (!access) {
+      return;
+    }
+    const update = retentionPolicyInputSchema.parse(request.body);
+    const current =
+      retentionPolicies.get(tenantId) ??
+      ({
+        tenantId,
+        days: defaultRetentionDays,
+        enabled: true,
+        updatedAt: new Date().toISOString(),
+        updatedBy: "system"
+      } satisfies RetentionPolicy);
+    const policy: RetentionPolicy = {
+      tenantId,
+      days: update.days ?? current.days,
+      enabled: update.enabled ?? current.enabled,
+      updatedAt: new Date().toISOString(),
+      updatedBy: access.userId
+    };
+    retentionPolicies.set(tenantId, policy);
+    recordAuditEvent({
+      tenantId,
+      actorId: access.userId,
+      action: "retention.updated",
+      metadata: { days: policy.days, enabled: policy.enabled }
+    });
+    const removed = applyRetentionForTenant(tenantId, access.userId);
+    return { policy, removed };
+  });
+
+  fastify.post("/tenants/:tenantId/gdpr/deletion-requests", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "admin");
+    if (!access) {
+      return;
+    }
+    const payload = gdprDeletionSchema.parse(request.body);
+    if (payload.agentId) {
+      const agentTenant = getTenantIdForAgent(payload.agentId);
+      if (!agentTenant) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      if (agentTenant !== tenantId) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+    }
+    const toDelete = new Set<string>();
+    if (payload.conversationId) {
+      const conversationTenant = getTenantIdForConversation(payload.conversationId);
+      if (!conversationTenant) {
+        return reply.code(404).send({ error: "conversation_not_found" });
+      }
+      if (conversationTenant !== tenantId) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+      toDelete.add(payload.conversationId);
+    }
+    if (payload.userId) {
+      for (const conversation of conversations.values()) {
+        if (conversation.userId !== payload.userId) {
+          continue;
+        }
+        const conversationTenantId = getTenantIdForAgent(conversation.agentId);
+        if (conversationTenantId !== tenantId) {
+          continue;
+        }
+        if (payload.agentId && conversation.agentId !== payload.agentId) {
+          continue;
+        }
+        toDelete.add(conversation.id);
+      }
+    }
+    const removed = removeConversations(tenantId, toDelete);
+    recordAuditEvent({
+      tenantId,
+      actorId: access.userId,
+      action: "gdpr.deletion_requested",
+      metadata: {
+        userId: payload.userId,
+        conversationId: payload.conversationId,
+        agentId: payload.agentId,
+        deletedConversations: removed.removedConversations,
+        deletedMetrics: removed.removedMetrics
+      }
+    });
+    return {
+      deletedConversations: removed.removedConversations,
+      deletedMetrics: removed.removedMetrics,
+      requestedAt: new Date().toISOString()
+    };
+  });
+
+  fastify.get("/tenants/:tenantId/audit-logs", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const querySchema = z.object({
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      action: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional(),
+      offset: z.coerce.number().int().min(0).optional()
+    });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return;
+    }
+    const query = querySchema.parse(request.query);
+    const from = query.from ? new Date(query.from).getTime() : Number.NEGATIVE_INFINITY;
+    const to = query.to ? new Date(query.to).getTime() : Number.POSITIVE_INFINITY;
+    let items = auditEvents.filter((event) => event.tenantId === tenantId);
+    if (query.action) {
+      items = items.filter((event) => event.action === query.action);
+    }
+    items = items.filter((event) => {
+      const timestamp = new Date(event.createdAt).getTime();
+      return timestamp >= from && timestamp <= to;
+    });
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const limit = query.limit ?? 100;
+    const offset = query.offset ?? 0;
+    return { items: items.slice(offset, offset + limit) };
+  });
 
   fastify.post("/agents", async (request, reply) => {
     const data = agentSchema.parse(request.body);
     if (!tenants.has(data.tenantId)) {
       return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, data.tenantId, "member");
+    if (!access) {
+      return;
     }
     const id = `agent_${crypto.randomUUID()}`;
     const agent: Agent = {
@@ -657,12 +1884,172 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return reply.code(201).send(agent);
   });
 
-  fastify.get("/agents", async () => ({ items: Array.from(agents.values()) }));
+  fastify.get("/agents", async (request, reply) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    const items = Array.from(agents.values()).filter((agent) =>
+      allowedTenantIds.has(agent.tenantId)
+    );
+    return { items };
+  });
+
+  fastify.post("/actions", async (request, reply) => {
+    const data = actionSchema.parse(request.body);
+    if (!agents.has(data.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const tenantId = getTenantIdForAgent(data.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "member");
+    if (!access) {
+      return;
+    }
+    let normalizedConfig: Record<string, unknown> | undefined;
+    try {
+      normalizedConfig = normalizeActionConfig(data.type, data.config);
+    } catch (error) {
+      if (error instanceof ActionExecutionError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+    const id = `action_${crypto.randomUUID()}`;
+    const action: Action = {
+      id,
+      agentId: data.agentId,
+      type: data.type,
+      config: normalizedConfig,
+      enabled: data.enabled ?? true,
+      createdAt: new Date().toISOString()
+    };
+    actions.set(id, action);
+    return reply.code(201).send(action);
+  });
+
+  fastify.get("/actions", async (request, reply) => {
+    const schema = z.object({ agentId: z.string().optional() });
+    const data = schema.parse(request.query);
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    if (data.agentId) {
+      const tenantId = getTenantIdForAgent(data.agentId);
+      if (!tenantId) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      if (!allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+      const items = Array.from(actions.values()).filter(
+        (action) => action.agentId === data.agentId
+      );
+      return { items };
+    }
+    const items = Array.from(actions.values()).filter((action) => {
+      const tenantId = getTenantIdForAgent(action.agentId);
+      return tenantId ? allowedTenantIds.has(tenantId) : false;
+    });
+    return { items };
+  });
+
+  fastify.get("/actions/:id", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const action = actions.get(id);
+    if (!action) {
+      return reply.code(404).send({ error: "action_not_found" });
+    }
+    const tenantId = getTenantIdForAgent(action.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return;
+    }
+    return { action };
+  });
+
+  fastify.post("/actions/:id/execute", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const action = actions.get(id);
+    if (!action) {
+      return reply.code(404).send({ error: "action_not_found" });
+    }
+    const tenantId = getTenantIdForAgent(action.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "member");
+    if (!access) {
+      return;
+    }
+    if (!action.enabled) {
+      return reply.code(403).send({ error: "action_disabled" });
+    }
+    const payload =
+      request.body && typeof request.body === "object"
+        ? (request.body as Record<string, unknown>)
+        : {};
+    try {
+      const { input, output } = executeAction(action, payload);
+      const execution: ActionExecution = {
+        id: `execution_${crypto.randomUUID()}`,
+        actionId: action.id,
+        type: action.type,
+        status: "success",
+        input,
+        output,
+        createdAt: new Date().toISOString()
+      };
+      actionExecutions.set(execution.id, execution);
+      const conversationId =
+        typeof payload.conversationId === "string"
+          ? payload.conversationId
+          : typeof payload.metadata === "object" &&
+              payload.metadata !== null &&
+              typeof (payload.metadata as Record<string, unknown>).conversationId === "string"
+            ? ((payload.metadata as Record<string, unknown>).conversationId as string)
+            : undefined;
+      recordMetricEvent({
+        type: "action_executed",
+        agentId: action.agentId,
+        conversationId,
+        timestamp: execution.createdAt,
+        metadata: {
+          actionType: action.type,
+          status: execution.status
+        }
+      });
+      return { execution };
+    } catch (error) {
+      if (error instanceof ActionExecutionError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
 
   fastify.post("/channels", async (request, reply) => {
     const data = channelSchema.parse(request.body);
     if (!agents.has(data.agentId)) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const tenantId = getTenantIdForAgent(data.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "member");
+    if (!access) {
+      return;
     }
     const id = `channel_${crypto.randomUUID()}`;
     const normalizedConfig = normalizeChannelConfig(data.config);
@@ -678,14 +2065,31 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return reply.code(201).send(channel);
   });
 
-  fastify.get("/channels", async (request) => {
+  fastify.get("/channels", async (request, reply) => {
     const querySchema = z.object({ agentId: z.string().min(1).optional() });
     const query = querySchema.parse(request.query);
-    const items = query.agentId
-      ? Array.from(channels.values()).filter(
-          (channel) => channel.agentId === query.agentId
-        )
-      : Array.from(channels.values());
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    if (query.agentId) {
+      const tenantId = getTenantIdForAgent(query.agentId);
+      if (!tenantId) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      if (!allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+      const items = Array.from(channels.values()).filter(
+        (channel) => channel.agentId === query.agentId
+      );
+      return { items };
+    }
+    const items = Array.from(channels.values()).filter((channel) => {
+      const tenantId = getTenantIdForAgent(channel.agentId);
+      return tenantId ? allowedTenantIds.has(tenantId) : false;
+    });
     return { items };
   });
 
@@ -695,6 +2099,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const channel = channels.get(id);
     if (!channel) {
       return reply.code(404).send({ error: "channel_not_found" });
+    }
+    const tenantId = getTenantIdForAgent(channel.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return;
     }
     return { channel };
   });
@@ -706,11 +2118,22 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!channel) {
       return reply.code(404).send({ error: "channel_not_found" });
     }
+    const tenantId = getTenantIdForAgent(channel.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "member");
+    if (!access) {
+      return;
+    }
     const update = channelUpdateSchema.parse(request.body);
     const mergedConfig = normalizeChannelConfig({
       ...(channel.config ?? {}),
       ...(update.config ?? {})
     });
+    if (connectorChannelTypes.has(channel.type) && !mergedConfig.authToken) {
+      return reply.code(400).send({ error: "auth_token_required" });
+    }
     const updated: Channel = {
       ...channel,
       config: mergedConfig,
@@ -718,6 +2141,317 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     channels.set(id, updated);
     return { channel: updated };
+  });
+
+  fastify.get("/channels/:id/webhook", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const channel = channels.get(id);
+    if (!channel) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+    if (!connectorChannelTypes.has(channel.type)) {
+      return reply.code(400).send({ error: "channel_webhook_not_supported" });
+    }
+    if (channel.type !== "whatsapp") {
+      return reply.code(400).send({ error: "channel_webhook_not_supported" });
+    }
+    const querySchema = z
+      .object({
+        "hub.mode": z.string().optional(),
+        "hub.verify_token": z.string().optional(),
+        "hub.challenge": z.string().optional(),
+        challenge: z.string().optional()
+      })
+      .passthrough();
+    const query = querySchema.parse(request.query);
+    const mode = query["hub.mode"];
+    const verifyToken = query["hub.verify_token"];
+    const challenge = query["hub.challenge"] ?? query.challenge;
+    const configuredToken = channel.config?.verifyToken ?? channel.config?.authToken;
+    if (!configuredToken) {
+      return reply.code(403).send({ error: "channel_auth_not_configured" });
+    }
+    if (mode === "subscribe" && verifyToken === configuredToken && challenge) {
+      reply.header("content-type", "text/plain; charset=utf-8");
+      return reply.send(challenge);
+    }
+    return reply.code(403).send({ error: "channel_unauthorized" });
+  });
+
+  fastify.post("/channels/:id/webhook", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const channel = channels.get(id);
+    if (!channel) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+    if (!channel.enabled) {
+      return reply.code(403).send({ error: "channel_disabled" });
+    }
+    if (!connectorChannelTypes.has(channel.type)) {
+      return reply.code(400).send({ error: "channel_webhook_not_supported" });
+    }
+    const authResult = requireConnectorAuth(channel, request.headers);
+    if (!authResult.ok) {
+      return reply.code(authResult.statusCode).send({ error: authResult.error });
+    }
+    const payload = request.body;
+    if (!isRecord(payload)) {
+      return reply.code(400).send({ error: "invalid_payload" });
+    }
+    const parsed = parseChannelWebhookPayload(channel.type, payload);
+    if (parsed.kind === "challenge") {
+      return reply.send({ challenge: parsed.challenge });
+    }
+    if (parsed.kind === "ignored") {
+      return reply.code(202).send({ status: "ignored" });
+    }
+    if (parsed.kind === "error") {
+      return reply.code(400).send({ error: parsed.error });
+    }
+    try {
+      const conversation = getOrCreateConversation({
+        channel,
+        userId: parsed.message.userId,
+        threadKey: parsed.message.threadKey
+      });
+      recordMetricEvent({
+        type: "message_sent",
+        agentId: channel.agentId,
+        channelId: channel.id,
+        conversationId: conversation.id,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          role: "user"
+        }
+      });
+      const { response, prompt } = await runChatFlow({
+        agentId: channel.agentId,
+        message: parsed.message.message
+      });
+      recordMetricEvent({
+        type: "message_sent",
+        agentId: channel.agentId,
+        channelId: channel.id,
+        conversationId: conversation.id,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          role: "assistant",
+          sourceCount: response.sources.length
+        }
+      });
+      return reply.send({
+        channelId: channel.id,
+        conversationId: conversation.id,
+        reply: response,
+        prompt,
+        metadata: parsed.message.metadata
+      });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  fastify.post("/conversations", async (request, reply) => {
+    const data = conversationSchema.parse(request.body);
+    const agent = agents.get(data.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return;
+    }
+    if (data.channelId) {
+      const channel = channels.get(data.channelId);
+      if (!channel) {
+        return reply.code(404).send({ error: "channel_not_found" });
+      }
+      if (channel.agentId !== data.agentId) {
+        return reply.code(400).send({ error: "channel_agent_mismatch" });
+      }
+    }
+    const id = `conversation_${crypto.randomUUID()}`;
+    const conversation: Conversation = {
+      id,
+      agentId: data.agentId,
+      channelId: data.channelId,
+      userId: data.userId,
+      status: "open",
+      startedAt: new Date().toISOString()
+    };
+    conversations.set(id, conversation);
+    recordMetricEvent({
+      type: "conversation_started",
+      agentId: conversation.agentId,
+      channelId: conversation.channelId,
+      conversationId: conversation.id,
+      timestamp: conversation.startedAt
+    });
+    return reply.code(201).send(conversation);
+  });
+
+  fastify.get("/conversations", async (request, reply) => {
+    const querySchema = z.object({
+      agentId: z.string().min(1).optional(),
+      channelId: z.string().min(1).optional(),
+      userId: z.string().min(1).optional(),
+      status: conversationStatusSchema.optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+      offset: z.coerce.number().int().min(0).optional()
+    });
+    const query = querySchema.parse(request.query);
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    const tenantsToRefresh = new Set<string>();
+    if (query.agentId) {
+      const tenantId = getTenantIdForAgent(query.agentId);
+      if (!tenantId) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      if (!allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+      tenantsToRefresh.add(tenantId);
+    }
+    if (query.channelId) {
+      const tenantId = getTenantIdForChannel(query.channelId);
+      if (!tenantId) {
+        return reply.code(404).send({ error: "channel_not_found" });
+      }
+      if (!allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+      tenantsToRefresh.add(tenantId);
+    }
+    if (tenantsToRefresh.size === 0) {
+      for (const tenantId of allowedTenantIds) {
+        tenantsToRefresh.add(tenantId);
+      }
+    }
+    for (const tenantId of tenantsToRefresh) {
+      applyRetentionForTenant(tenantId, userId);
+    }
+    const limit = query.limit ?? 50;
+    const offset = query.offset ?? 0;
+    let items = Array.from(conversations.values()).filter((conversation) => {
+      const tenantId = getTenantIdForAgent(conversation.agentId);
+      return tenantId ? allowedTenantIds.has(tenantId) : false;
+    });
+    if (query.agentId) {
+      items = items.filter((conversation) => conversation.agentId === query.agentId);
+    }
+    if (query.channelId) {
+      items = items.filter((conversation) => conversation.channelId === query.channelId);
+    }
+    if (query.userId) {
+      items = items.filter((conversation) => conversation.userId === query.userId);
+    }
+    if (query.status) {
+      items = items.filter((conversation) => conversation.status === query.status);
+    }
+    return { items: items.slice(offset, offset + limit) };
+  });
+
+  fastify.post("/metrics/events", async (request, reply) => {
+    const batchSchema = z.object({ events: z.array(metricEventInputSchema).min(1) });
+    const bodySchema = z.union([metricEventInputSchema, batchSchema]);
+    const body = bodySchema.parse(request.body);
+    const events = "events" in body ? body.events : [body];
+    const recorded: MetricEvent[] = [];
+
+    for (const eventInput of events) {
+      if (eventInput.channelId && !channels.has(eventInput.channelId)) {
+        return reply.code(404).send({ error: "channel_not_found" });
+      }
+      if (eventInput.agentId && !agents.has(eventInput.agentId)) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      const agentId = resolveAgentId(eventInput);
+      if (agentId && !agents.has(agentId)) {
+        return reply.code(404).send({ error: "agent_not_found" });
+      }
+      const tenantId = resolveTenantId({ ...eventInput, agentId });
+      if (!tenantId) {
+        return reply.code(400).send({ error: "tenant_required" });
+      }
+      const event = recordMetricEvent({
+        ...eventInput,
+        agentId,
+        tenantId
+      });
+      if (event) {
+        recorded.push(event);
+      }
+    }
+
+    return reply.code(201).send({ items: recorded });
+  });
+
+  fastify.get("/metrics/summary", async (request, reply) => {
+    const querySchema = z.object({
+      tenantId: z.string().min(1).optional(),
+      agentId: z.string().min(1).optional(),
+      channelId: z.string().min(1).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional()
+    });
+    const query = querySchema.parse(request.query);
+    if (query.tenantId && !tenants.has(query.tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    if (query.agentId && !agents.has(query.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    if (query.channelId && !channels.has(query.channelId)) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+
+    const { items, window } = selectMetricEvents(query);
+    if (window.from.getTime() > window.to.getTime()) {
+      return reply.code(400).send({ error: "invalid_time_window" });
+    }
+
+    return buildMetricsSummary(items, window);
+  });
+
+  fastify.get("/metrics/conversations", async (request, reply) => {
+    const querySchema = z.object({
+      tenantId: z.string().min(1).optional(),
+      agentId: z.string().min(1).optional(),
+      channelId: z.string().min(1).optional(),
+      from: z.string().datetime().optional(),
+      to: z.string().datetime().optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+      offset: z.coerce.number().int().min(0).optional()
+    });
+    const query = querySchema.parse(request.query);
+    if (query.tenantId && !tenants.has(query.tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    if (query.agentId && !agents.has(query.agentId)) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    if (query.channelId && !channels.has(query.channelId)) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+
+    const { items, window } = selectMetricEvents(query);
+    if (window.from.getTime() > window.to.getTime()) {
+      return reply.code(400).send({ error: "invalid_time_window" });
+    }
+
+    const summaries = buildConversationReview(items, window, query);
+    const limit = query.limit ?? 50;
+    const offset = query.offset ?? 0;
+    return { items: summaries.slice(offset, offset + limit) };
   });
 
   fastify.post("/sources", async (request, reply) => {
@@ -862,6 +2596,18 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       lastSyncedAt: createdAt
     });
 
+    recordMetricEvent({
+      type: "ingestion_completed",
+      agentId: source.agentId,
+      conversationId: undefined,
+      timestamp: createdAt,
+      metadata: {
+        sourceId: source.id,
+        kind: "text",
+        chunkCount
+      }
+    });
+
     return reply.code(201).send({ chunks: createdChunks });
   });
 
@@ -927,6 +2673,18 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         status: nextStatus,
         lastSyncedAt: status === "complete" ? new Date().toISOString() : source.lastSyncedAt
       });
+      if (status === "complete") {
+        recordMetricEvent({
+          type: "ingestion_completed",
+          agentId: source.agentId,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            sourceId: source.id,
+            jobId: updatedJob.id,
+            kind: updatedJob.kind
+          }
+        });
+      }
     }
 
     return { job: updatedJob };
@@ -1014,6 +2772,18 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       status: "complete"
     };
     ingestionJobs.set(job.id, updatedJob);
+
+    recordMetricEvent({
+      type: "ingestion_completed",
+      agentId: source.agentId,
+      timestamp: createdAt,
+      metadata: {
+        sourceId: source.id,
+        jobId: job.id,
+        kind: job.kind,
+        chunkCount: createdChunks.length
+      }
+    });
 
     return reply.code(201).send({
       source: updatedSource,
@@ -1107,12 +2877,26 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       ? new Set(data.sourceIds)
       : undefined;
 
+    const retrievalStart = Date.now();
     const results = await vectorStore.query(tenant.region, {
       agentId: data.agentId,
+      queryText: data.query,
       queryEmbedding,
       minScore,
       maxResults,
       sourceFilter
+    });
+
+    recordMetricEvent({
+      type: "retrieval_performed",
+      agentId: data.agentId,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        latencyMs: Date.now() - retrievalStart,
+        resultCount: results.length,
+        minScore,
+        maxResults
+      }
     });
 
     return { items: results };
@@ -1159,63 +2943,61 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       return reply.code(400).send({ error: "agent_or_channel_required" });
     }
 
-    const agent = agents.get(agentId);
-    if (!agent) {
-      return reply.code(404).send({ error: "agent_not_found" });
-    }
-    const tenant = tenants.get(agent.tenantId);
-    if (!tenant) {
-      return reply.code(404).send({ error: "tenant_not_found" });
-    }
-
-    const queryEmbedding = buildEmbedding(data.message);
-    const minScore = data.minScore ?? 0;
-    const maxResults = data.maxResults ?? 4;
-    const sourceFilter = data.sourceIds
-      ? new Set(data.sourceIds)
-      : undefined;
-
-    const retrievalMatches = await vectorStore.query(tenant.region, {
+    recordMetricEvent({
+      type: "message_sent",
       agentId,
-      queryEmbedding,
-      minScore,
-      maxResults,
-      sourceFilter
-    });
-
-    const context = retrievalMatches.map((item) => ({
-      id: item.chunk.id,
-      sourceId: item.chunk.sourceId,
-      content: item.chunk.content,
-      score: item.score,
-      metadata: item.chunk.metadata
-    }));
-
-    const prompt = buildChatPrompt({
-      basePrompt: agent.basePrompt,
-      message: data.message,
-      context
-    });
-    const response = buildChatResponse({ message: data.message, context });
-
-    if (data.stream) {
-      reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
-      reply.raw.setHeader("Connection", "keep-alive");
-      reply.raw.flushHeaders();
-
-      const chunksToSend = chunkResponseForStreaming(response.message);
-      for (const chunk of chunksToSend) {
-        reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
+      channelId: channel?.id,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        role: "user",
+        channelType: channel?.type
       }
-      reply.raw.write(
-        `data: ${JSON.stringify({ done: true, response })}\n\n`
-      );
-      reply.raw.end();
-      return reply;
-    }
+    });
 
-    return reply.send({ ...response, prompt });
+    try {
+      const { response, prompt } = await runChatFlow({
+        agentId,
+        message: data.message,
+        maxResults: data.maxResults,
+        minScore: data.minScore,
+        sourceIds: data.sourceIds
+      });
+
+      recordMetricEvent({
+        type: "message_sent",
+        agentId,
+        channelId: channel?.id,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          role: "assistant",
+          sourceCount: response.sources.length
+        }
+      });
+
+      if (data.stream) {
+        reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
+        reply.raw.setHeader("Connection", "keep-alive");
+        reply.raw.flushHeaders();
+
+        const chunksToSend = chunkResponseForStreaming(response.message);
+        for (const chunk of chunksToSend) {
+          reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
+        }
+        reply.raw.write(
+          `data: ${JSON.stringify({ done: true, response })}\n\n`
+        );
+        reply.raw.end();
+        return reply;
+      }
+
+      return reply.send({ ...response, prompt });
+    } catch (error) {
+      if (error instanceof RequestError) {
+        return reply.code(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
   });
 
   return fastify;

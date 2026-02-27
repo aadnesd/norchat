@@ -3,6 +3,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
+import type { InjectOptions } from "light-my-request";
 import { buildServer } from "../index.js";
 
 describe("api routes", () => {
@@ -24,8 +25,69 @@ describe("api routes", () => {
     delete process.env.VECTOR_STORE_DIR;
   });
 
+  const authHeaders = (userId = "user_admin") => ({
+    "x-user-id": userId
+  });
+
+  const injectAs = (userId: string, options: InjectOptions) =>
+    server.inject({
+      ...options,
+      headers: {
+        ...options.headers,
+        ...authHeaders(userId)
+      }
+    });
+
+  const adminInject = (options: InjectOptions) =>
+    injectAs("user_admin", options);
+
+
+  const seedAgentWithText = async (name: string, text: string) => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name,
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: `${name} Agent`
+      }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: agent.id,
+        type: "text",
+        value: "seed"
+      }
+    });
+    const source = sourceResponse.json();
+
+    const ingestResponse = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: {
+        text
+      }
+    });
+    expect(ingestResponse.statusCode).toBe(201);
+
+    return { tenant, agent, source };
+  };
+
   it("creates and lists tenants", async () => {
-    const createResponse = await server.inject({
+    const createResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -39,7 +101,7 @@ describe("api routes", () => {
     const tenant = createResponse.json();
     expect(tenant.id).toMatch(/^tenant_/u);
 
-    const listResponse = await server.inject({
+    const listResponse = await adminInject({
       method: "GET",
       url: "/tenants"
     });
@@ -52,7 +114,7 @@ describe("api routes", () => {
   });
 
   it("creates source, retrains, and deletes", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -62,7 +124,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -72,7 +134,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const sourceResponse = await server.inject({
+    const sourceResponse = await adminInject({
       method: "POST",
       url: "/sources",
       payload: {
@@ -86,7 +148,7 @@ describe("api routes", () => {
     const source = sourceResponse.json();
     expect(source.status).toBe("queued");
 
-    const retrainResponse = await server.inject({
+    const retrainResponse = await adminInject({
       method: "POST",
       url: `/sources/${source.id}/retrain`
     });
@@ -96,7 +158,7 @@ describe("api routes", () => {
     expect(retrainBody.source.status).toBe("processing");
     expect(retrainBody.source.lastSyncedAt).toBeTypeOf("string");
 
-    const deleteResponse = await server.inject({
+    const deleteResponse = await adminInject({
       method: "DELETE",
       url: `/sources/${source.id}`
     });
@@ -105,7 +167,7 @@ describe("api routes", () => {
   });
 
   it("queues crawl ingestion job", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -115,7 +177,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -125,7 +187,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const crawlResponse = await server.inject({
+    const crawlResponse = await adminInject({
       method: "POST",
       url: "/sources/crawl",
       payload: {
@@ -147,7 +209,7 @@ describe("api routes", () => {
   });
 
   it("queues file ingestion and tracks job status", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -157,7 +219,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -167,7 +229,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const fileResponse = await server.inject({
+    const fileResponse = await adminInject({
       method: "POST",
       url: "/sources/file",
       payload: {
@@ -185,7 +247,7 @@ describe("api routes", () => {
     expect(fileBody.job.kind).toBe("file");
     expect(fileBody.job.status).toBe("queued");
 
-    const listResponse = await server.inject({
+    const listResponse = await adminInject({
       method: "GET",
       url: `/ingestion-jobs?sourceId=${fileBody.source.id}`
     });
@@ -193,13 +255,13 @@ describe("api routes", () => {
     const listBody = listResponse.json();
     expect(listBody.items.length).toBe(1);
 
-    const jobResponse = await server.inject({
+    const jobResponse = await adminInject({
       method: "GET",
       url: `/ingestion-jobs/${fileBody.job.id}`
     });
     expect(jobResponse.statusCode).toBe(200);
 
-    const processingResponse = await server.inject({
+    const processingResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${fileBody.job.id}/status`,
       payload: { status: "processing" }
@@ -207,7 +269,7 @@ describe("api routes", () => {
     expect(processingResponse.statusCode).toBe(200);
     expect(processingResponse.json().job.status).toBe("processing");
 
-    const completeResponse = await server.inject({
+    const completeResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${fileBody.job.id}/status`,
       payload: { status: "complete" }
@@ -218,7 +280,7 @@ describe("api routes", () => {
   });
 
   it("ingests text chunks and retrieves relevant content", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -228,7 +290,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -238,7 +300,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const sourceResponse = await server.inject({
+    const sourceResponse = await adminInject({
       method: "POST",
       url: "/sources",
       payload: {
@@ -249,7 +311,7 @@ describe("api routes", () => {
     });
     const source = sourceResponse.json();
 
-    const ingestResponse = await server.inject({
+    const ingestResponse = await adminInject({
       method: "POST",
       url: `/sources/${source.id}/ingest-text`,
       payload: {
@@ -281,7 +343,7 @@ describe("api routes", () => {
       )
     ).toBe(true);
 
-    const retrieveResponse = await server.inject({
+    const retrieveResponse = await adminInject({
       method: "POST",
       url: "/retrieve",
       payload: {
@@ -298,7 +360,7 @@ describe("api routes", () => {
   });
 
   it("ingests file content via ingestion job and retrieves", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -308,7 +370,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -318,7 +380,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const fileResponse = await server.inject({
+    const fileResponse = await adminInject({
       method: "POST",
       url: "/sources/file",
       payload: {
@@ -332,7 +394,7 @@ describe("api routes", () => {
     expect(fileResponse.statusCode).toBe(201);
     const fileBody = fileResponse.json();
 
-    const ingestResponse = await server.inject({
+    const ingestResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${fileBody.job.id}/ingest`,
       payload: {
@@ -351,14 +413,14 @@ describe("api routes", () => {
     const ingestBody = ingestResponse.json();
     expect(ingestBody.chunks.length).toBeGreaterThan(0);
 
-    const jobResponse = await server.inject({
+    const jobResponse = await adminInject({
       method: "GET",
       url: `/ingestion-jobs/${fileBody.job.id}`
     });
     expect(jobResponse.statusCode).toBe(200);
     expect(jobResponse.json().job.status).toBe("complete");
 
-    const retrieveResponse = await server.inject({
+    const retrieveResponse = await adminInject({
       method: "POST",
       url: "/retrieve",
       payload: {
@@ -375,7 +437,7 @@ describe("api routes", () => {
   });
 
   it("ingests crawl content via ingestion job and retrieves", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -385,7 +447,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -395,7 +457,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const crawlResponse = await server.inject({
+    const crawlResponse = await adminInject({
       method: "POST",
       url: "/sources/crawl",
       payload: {
@@ -409,7 +471,7 @@ describe("api routes", () => {
     expect(crawlResponse.statusCode).toBe(201);
     const crawlBody = crawlResponse.json();
 
-    const ingestResponse = await server.inject({
+    const ingestResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${crawlBody.job.id}/ingest`,
       payload: {
@@ -431,7 +493,7 @@ describe("api routes", () => {
     const ingestBody = ingestResponse.json();
     expect(ingestBody.chunks.length).toBeGreaterThan(0);
 
-    const retrieveResponse = await server.inject({
+    const retrieveResponse = await adminInject({
       method: "POST",
       url: "/retrieve",
       payload: {
@@ -448,7 +510,7 @@ describe("api routes", () => {
   });
 
   it("runs chat with retrieval and streams responses", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -458,7 +520,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -469,7 +531,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const sourceResponse = await server.inject({
+    const sourceResponse = await adminInject({
       method: "POST",
       url: "/sources",
       payload: {
@@ -480,7 +542,7 @@ describe("api routes", () => {
     });
     const source = sourceResponse.json();
 
-    await server.inject({
+    await adminInject({
       method: "POST",
       url: `/sources/${source.id}/ingest-text`,
       payload: {
@@ -490,7 +552,7 @@ describe("api routes", () => {
       }
     });
 
-    const chatResponse = await server.inject({
+    const chatResponse = await adminInject({
       method: "POST",
       url: "/chat",
       payload: {
@@ -505,7 +567,7 @@ describe("api routes", () => {
     expect(chatBody.sources.length).toBeGreaterThan(0);
     expect(chatBody.prompt).toContain("Be helpful and cite sources");
 
-    const streamResponse = await server.inject({
+    const streamResponse = await adminInject({
       method: "POST",
       url: "/chat",
       payload: {
@@ -521,8 +583,187 @@ describe("api routes", () => {
     expect(streamBody).toContain("\"done\":true");
   });
 
-  it("creates widget channel and enforces domain allowlist", async () => {
-    const tenantResponse = await server.inject({
+  it("creates and lists actions", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Roros Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Action Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const actionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "slack_notify",
+        config: {
+          channel: "#support"
+        }
+      }
+    });
+
+    expect(actionResponse.statusCode).toBe(201);
+    const action = actionResponse.json();
+    expect(action.id).toMatch(/^action_/u);
+    expect(action.enabled).toBe(true);
+
+    const listResponse = await adminInject({
+      method: "GET",
+      url: `/actions?agentId=${agent.id}`
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const listBody = listResponse.json();
+    expect(listBody.items.some((item: { id: string }) => item.id === action.id)).toBe(
+      true
+    );
+  });
+
+  it("executes a Slack notification action", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Arendal Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Slack Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const actionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "slack_notify",
+        config: {
+          channel: "#support"
+        }
+      }
+    });
+    const action = actionResponse.json();
+
+    const executeResponse = await adminInject({
+      method: "POST",
+      url: `/actions/${action.id}/execute`,
+      payload: {
+        message: "Customer requested escalation.",
+        metadata: {
+          conversationId: "conv_123"
+        }
+      }
+    });
+
+    expect(executeResponse.statusCode).toBe(200);
+    const executeBody = executeResponse.json();
+    expect(executeBody.execution.id).toMatch(/^execution_/u);
+    expect(executeBody.execution.output.delivery.channel).toBe("#support");
+    expect(executeBody.execution.output.delivery.text).toContain("escalation");
+  });
+
+  it("executes CRM escalation and Stripe billing actions", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Alta Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Ops Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const ticketActionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "ticket_create",
+        config: {
+          provider: "zendesk",
+          defaultPriority: "high"
+        }
+      }
+    });
+    const ticketAction = ticketActionResponse.json();
+
+    const ticketExecuteResponse = await adminInject({
+      method: "POST",
+      url: `/actions/${ticketAction.id}/execute`,
+      payload: {
+        subject: "Billing issue",
+        description: "Customer cannot update their card details."
+      }
+    });
+
+    expect(ticketExecuteResponse.statusCode).toBe(200);
+    const ticketBody = ticketExecuteResponse.json();
+    expect(ticketBody.execution.output.ticket.provider).toBe("zendesk");
+    expect(ticketBody.execution.output.ticket.priority).toBe("high");
+
+    const billingActionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "stripe_billing",
+        config: {
+          currency: "NOK",
+          defaultAmount: 199
+        }
+      }
+    });
+    const billingAction = billingActionResponse.json();
+
+    const billingExecuteResponse = await adminInject({
+      method: "POST",
+      url: `/actions/${billingAction.id}/execute`,
+      payload: {
+        customerId: "cus_123"
+      }
+    });
+
+    expect(billingExecuteResponse.statusCode).toBe(200);
+    const billingBody = billingExecuteResponse.json();
+    expect(billingBody.execution.output.invoice.currency).toBe("NOK");
+    expect(billingBody.execution.output.invoice.amount).toBe(199);
+  });
+
+  it("creates and lists conversations with pagination", async () => {
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -532,7 +773,109 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "History Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "web_widget",
+        enabled: true
+      }
+    });
+    const channel = channelResponse.json();
+
+    const firstConversationResponse = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id
+      }
+    });
+    expect(firstConversationResponse.statusCode).toBe(201);
+    const firstConversation = firstConversationResponse.json();
+    expect(firstConversation.status).toBe("open");
+    expect(firstConversation.startedAt).toBeTypeOf("string");
+    expect(firstConversation.endedAt).toBeUndefined();
+
+    const secondConversationResponse = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id,
+        channelId: channel.id,
+        userId: "user_123"
+      }
+    });
+    expect(secondConversationResponse.statusCode).toBe(201);
+    const secondConversation = secondConversationResponse.json();
+    expect(secondConversation.channelId).toBe(channel.id);
+    expect(secondConversation.userId).toBe("user_123");
+
+    const thirdConversationResponse = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id
+      }
+    });
+    expect(thirdConversationResponse.statusCode).toBe(201);
+    const thirdConversation = thirdConversationResponse.json();
+
+    const listResponse = await adminInject({
+      method: "GET",
+      url: `/conversations?agentId=${agent.id}&limit=2&offset=1`
+    });
+    expect(listResponse.statusCode).toBe(200);
+    const listBody = listResponse.json();
+    expect(listBody.items).toHaveLength(2);
+    expect(listBody.items[0].id).toBe(secondConversation.id);
+    expect(listBody.items[1].id).toBe(thirdConversation.id);
+
+    const channelListResponse = await adminInject({
+      method: "GET",
+      url: `/conversations?channelId=${channel.id}`
+    });
+    expect(channelListResponse.statusCode).toBe(200);
+    const channelListBody = channelListResponse.json();
+    expect(channelListBody.items).toHaveLength(1);
+    expect(channelListBody.items[0].id).toBe(secondConversation.id);
+  });
+
+  it("validates conversation create input", async () => {
+    const response = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: "agent_missing"
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toBe("agent_not_found");
+  });
+
+  it("creates widget channel and enforces domain allowlist", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Fredrikstad Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -542,7 +885,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const channelResponse = await server.inject({
+    const channelResponse = await adminInject({
       method: "POST",
       url: "/channels",
       payload: {
@@ -559,7 +902,7 @@ describe("api routes", () => {
     expect(channel.id).toMatch(/^channel_/u);
     expect(channel.enabled).toBe(true);
 
-    const blockedResponse = await server.inject({
+    const blockedResponse = await adminInject({
       method: "POST",
       url: "/chat",
       headers: {
@@ -574,7 +917,7 @@ describe("api routes", () => {
     expect(blockedResponse.statusCode).toBe(403);
     expect(blockedResponse.json().error).toBe("domain_not_allowed");
 
-    const allowedResponse = await server.inject({
+    const allowedResponse = await adminInject({
       method: "POST",
       url: "/chat",
       headers: {
@@ -589,7 +932,7 @@ describe("api routes", () => {
     expect(allowedResponse.statusCode).toBe(200);
     expect(allowedResponse.json().message.length).toBeGreaterThan(0);
 
-    const wildcardResponse = await server.inject({
+    const wildcardResponse = await adminInject({
       method: "POST",
       url: "/chat",
       headers: {
@@ -605,7 +948,7 @@ describe("api routes", () => {
   });
 
   it("serves widget script and help page", async () => {
-    const tenantResponse = await server.inject({
+    const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
       payload: {
@@ -615,7 +958,7 @@ describe("api routes", () => {
     });
     const tenant = tenantResponse.json();
 
-    const agentResponse = await server.inject({
+    const agentResponse = await adminInject({
       method: "POST",
       url: "/agents",
       payload: {
@@ -625,7 +968,7 @@ describe("api routes", () => {
     });
     const agent = agentResponse.json();
 
-    const channelResponse = await server.inject({
+    const channelResponse = await adminInject({
       method: "POST",
       url: "/channels",
       payload: {
@@ -640,7 +983,7 @@ describe("api routes", () => {
     expect(channelResponse.statusCode).toBe(201);
     const channel = channelResponse.json();
 
-    const widgetResponse = await server.inject({
+    const widgetResponse = await adminInject({
       method: "GET",
       url: "/widget.js"
     });
@@ -649,7 +992,7 @@ describe("api routes", () => {
     expect(widgetResponse.headers["content-type"]).toContain("application/javascript");
     expect(widgetResponse.body).toContain("createWidget");
 
-    const helpResponse = await server.inject({
+    const helpResponse = await adminInject({
       method: "GET",
       url: `/help/${channel.id}`
     });
@@ -657,5 +1000,575 @@ describe("api routes", () => {
     expect(helpResponse.statusCode).toBe(200);
     expect(helpResponse.headers["content-type"]).toContain("text/html");
     expect(helpResponse.body).toContain(channel.id);
+  });
+
+  it("handles Slack webhook messages with shared auth", async () => {
+    const { agent } = await seedAgentWithText(
+      "Slack Workspace",
+      "Refunds are processed within 5 business days."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "slack",
+        config: {
+          authToken: "slack_secret"
+        }
+      }
+    });
+    const channel = channelResponse.json();
+
+    const unauthorizedResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      payload: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          text: "Refund policy?",
+          user: "U123",
+          ts: "1700000000.0001"
+        }
+      }
+    });
+    expect(unauthorizedResponse.statusCode).toBe(401);
+    expect(unauthorizedResponse.json().error).toBe("channel_unauthorized");
+
+    const verificationResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer slack_secret"
+      },
+      payload: {
+        type: "url_verification",
+        challenge: "verify-me"
+      }
+    });
+    expect(verificationResponse.statusCode).toBe(200);
+    expect(verificationResponse.json().challenge).toBe("verify-me");
+
+    const messageResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer slack_secret"
+      },
+      payload: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          text: "When are refunds processed?",
+          user: "U123",
+          ts: "1700000000.0002"
+        }
+      }
+    });
+    expect(messageResponse.statusCode).toBe(200);
+    const messageBody = messageResponse.json();
+    expect(messageBody.conversationId).toMatch(/^conversation_/u);
+    expect(messageBody.reply.message).toContain("Refunds are processed within 5 business days.");
+  });
+
+  it("handles WhatsApp, email, Zendesk, and Salesforce webhooks", async () => {
+    const { agent } = await seedAgentWithText(
+      "Multi Channel",
+      "Returns are accepted within 30 days with proof of purchase."
+    );
+
+    const whatsappResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "whatsapp",
+        config: {
+          authToken: "wa_secret",
+          verifyToken: "wa_verify"
+        }
+      }
+    });
+    const whatsappChannel = whatsappResponse.json();
+
+    const whatsappVerifyResponse = await adminInject({
+      method: "GET",
+      url: `/channels/${whatsappChannel.id}/webhook?hub.mode=subscribe&hub.verify_token=wa_verify&hub.challenge=12345`
+    });
+    expect(whatsappVerifyResponse.statusCode).toBe(200);
+    expect(whatsappVerifyResponse.body).toBe("12345");
+
+    const whatsappMessageResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${whatsappChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer wa_secret"
+      },
+      payload: {
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    {
+                      from: "4799999999",
+                      id: "wamid.1",
+                      text: { body: "What is the return window?" }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+    expect(whatsappMessageResponse.statusCode).toBe(200);
+    expect(whatsappMessageResponse.json().reply.message).toContain(
+      "Returns are accepted within 30 days"
+    );
+
+    const emailResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "email",
+        config: {
+          authToken: "email_secret"
+        }
+      }
+    });
+    const emailChannel = emailResponse.json();
+
+    const emailWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${emailChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer email_secret"
+      },
+      payload: {
+        from: "customer@example.no",
+        subject: "Returns",
+        text: "How many days do I have?"
+      }
+    });
+    expect(emailWebhookResponse.statusCode).toBe(200);
+    expect(emailWebhookResponse.json().reply.message).toContain(
+      "Returns are accepted within 30 days"
+    );
+
+    const zendeskResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "zendesk",
+        config: {
+          authToken: "zendesk_secret"
+        }
+      }
+    });
+    const zendeskChannel = zendeskResponse.json();
+
+    const zendeskWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${zendeskChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer zendesk_secret"
+      },
+      payload: {
+        ticket: {
+          id: 987,
+          subject: "Return policy",
+          description: "Is the return window 30 days?",
+          requester: {
+            email: "supporter@example.no"
+          }
+        }
+      }
+    });
+    expect(zendeskWebhookResponse.statusCode).toBe(200);
+    expect(zendeskWebhookResponse.json().reply.message).toContain(
+      "Returns are accepted within 30 days"
+    );
+
+    const salesforceResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "salesforce",
+        config: {
+          authToken: "sf_secret"
+        }
+      }
+    });
+    const salesforceChannel = salesforceResponse.json();
+
+    const salesforceWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${salesforceChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer sf_secret"
+      },
+      payload: {
+        Case: {
+          Id: "5003t00002",
+          Subject: "Return window",
+          Description: "Need the return policy details.",
+          Contact: {
+            Email: "case@example.no"
+          }
+        }
+      }
+    });
+    expect(salesforceWebhookResponse.statusCode).toBe(200);
+    expect(salesforceWebhookResponse.json().reply.message).toContain(
+      "Returns are accepted within 30 days"
+    );
+  });
+
+  it("aggregates metrics events into summary and conversation review", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Oslo Metrics",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Metrics Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "web_widget",
+        config: {
+          allowedDomains: ["metrics.example.no"]
+        }
+      }
+    });
+    const channel = channelResponse.json();
+
+    const conversationOneResponse = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id,
+        channelId: channel.id,
+        userId: "user_1"
+      }
+    });
+    const conversationOne = conversationOneResponse.json();
+
+    const conversationTwoResponse = await adminInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id,
+        channelId: channel.id,
+        userId: "user_2"
+      }
+    });
+    const conversationTwo = conversationTwoResponse.json();
+
+    const start = new Date("2025-01-01T10:00:00.000Z");
+    const addSeconds = (seconds: number) =>
+      new Date(start.getTime() + seconds * 1000).toISOString();
+
+    const metricsResponse = await adminInject({
+      method: "POST",
+      url: "/metrics/events",
+      payload: {
+        events: [
+          {
+            type: "conversation_started",
+            agentId: agent.id,
+            channelId: channel.id,
+            conversationId: conversationOne.id,
+            timestamp: start.toISOString()
+          },
+          {
+            type: "message_sent",
+            agentId: agent.id,
+            channelId: channel.id,
+            conversationId: conversationOne.id,
+            timestamp: addSeconds(30),
+            metadata: { role: "assistant" }
+          },
+          {
+            type: "retrieval_performed",
+            agentId: agent.id,
+            channelId: channel.id,
+            timestamp: addSeconds(35),
+            metadata: { latencyMs: 120, resultCount: 3 }
+          },
+          {
+            type: "feedback_received",
+            agentId: agent.id,
+            conversationId: conversationOne.id,
+            timestamp: addSeconds(60),
+            metadata: { rating: 5 }
+          },
+          {
+            type: "conversation_resolved",
+            agentId: agent.id,
+            channelId: channel.id,
+            conversationId: conversationOne.id,
+            timestamp: addSeconds(120),
+            metadata: { intent: "returns" }
+          },
+          {
+            type: "conversation_started",
+            agentId: agent.id,
+            channelId: channel.id,
+            conversationId: conversationTwo.id,
+            timestamp: addSeconds(200)
+          },
+          {
+            type: "conversation_escalated",
+            agentId: agent.id,
+            channelId: channel.id,
+            conversationId: conversationTwo.id,
+            timestamp: addSeconds(260),
+            metadata: { intent: "billing" }
+          }
+        ]
+      }
+    });
+    expect(metricsResponse.statusCode).toBe(201);
+
+    const summaryResponse = await adminInject({
+      method: "GET",
+      url: `/metrics/summary?agentId=${agent.id}&from=${start.toISOString()}&to=${addSeconds(
+        600
+      )}`
+    });
+    expect(summaryResponse.statusCode).toBe(200);
+    const summary = summaryResponse.json();
+    expect(summary.totals.conversations).toBe(2);
+    expect(summary.totals.deflected).toBe(1);
+    expect(summary.totals.escalated).toBe(1);
+    expect(summary.rates.deflectionRate).toBeCloseTo(0.5, 3);
+    expect(summary.rates.avgFirstResponseSeconds).toBeCloseTo(30, 3);
+    expect(summary.rates.avgResolutionSeconds).toBeCloseTo(90, 3);
+    expect(summary.rates.avgRetrievalLatencyMs).toBeCloseTo(120, 3);
+    expect(summary.rates.avgFeedbackRating).toBeCloseTo(5, 3);
+    expect(summary.topIntents.map((item: { intent: string }) => item.intent)).toContain(
+      "returns"
+    );
+
+    const conversationsResponse = await adminInject({
+      method: "GET",
+      url: `/metrics/conversations?agentId=${agent.id}&from=${start.toISOString()}&to=${addSeconds(
+        600
+      )}`
+    });
+    expect(conversationsResponse.statusCode).toBe(200);
+    const conversations = conversationsResponse.json();
+    expect(conversations.items).toHaveLength(2);
+    const deflected = conversations.items.find(
+      (item: { conversationId: string }) => item.conversationId === conversationOne.id
+    );
+    const escalated = conversations.items.find(
+      (item: { conversationId: string }) => item.conversationId === conversationTwo.id
+    );
+    expect(deflected.status).toBe("closed");
+    expect(deflected.firstResponseSeconds).toBeCloseTo(30, 3);
+    expect(deflected.resolutionSeconds).toBeCloseTo(120, 3);
+    expect(escalated.status).toBe("escalated");
+    expect(escalated.resolutionSeconds).toBeCloseTo(60, 3);
+  });
+
+  it("enforces RBAC for GDPR retention and records audit events", async () => {
+    const ownerId = "user_owner";
+    const viewerId = "user_viewer";
+    const ownerInject = (options: InjectOptions) =>
+      injectAs(ownerId, options);
+    const viewerInject = (options: InjectOptions) =>
+      injectAs(viewerId, options);
+
+    const tenantResponse = await ownerInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "GDPR Tenant",
+        region: "no"
+      }
+    });
+    expect(tenantResponse.statusCode).toBe(201);
+    const tenant = tenantResponse.json();
+
+    const memberResponse = await ownerInject({
+      method: "POST",
+      url: `/tenants/${tenant.id}/members`,
+      payload: {
+        userId: viewerId,
+        role: "viewer"
+      }
+    });
+    expect(memberResponse.statusCode).toBe(201);
+
+    const retentionDenied = await viewerInject({
+      method: "PUT",
+      url: `/tenants/${tenant.id}/gdpr/retention`,
+      payload: {
+        days: 0,
+        enabled: true
+      }
+    });
+    expect(retentionDenied.statusCode).toBe(403);
+
+    const retentionResponse = await ownerInject({
+      method: "PUT",
+      url: `/tenants/${tenant.id}/gdpr/retention`,
+      payload: {
+        days: 0,
+        enabled: true
+      }
+    });
+    expect(retentionResponse.statusCode).toBe(200);
+    expect(retentionResponse.json().policy.days).toBe(0);
+
+    const agentResponse = await ownerInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "GDPR Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const channelResponse = await ownerInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "web_widget",
+        config: { allowedDomains: ["gdpr.example.no"] }
+      }
+    });
+    const channel = channelResponse.json();
+
+    const conversationResponse = await ownerInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id,
+        channelId: channel.id,
+        userId: "customer_1"
+      }
+    });
+    expect(conversationResponse.statusCode).toBe(201);
+
+    const listResponse = await ownerInject({
+      method: "GET",
+      url: `/conversations?agentId=${agent.id}`
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json().items).toHaveLength(0);
+
+    const auditResponse = await ownerInject({
+      method: "GET",
+      url: `/tenants/${tenant.id}/audit-logs`
+    });
+    expect(auditResponse.statusCode).toBe(200);
+    const auditActions = auditResponse.json().items.map(
+      (item: { action: string }) => item.action
+    );
+    expect(auditActions).toContain("retention.updated");
+    expect(auditActions).toContain("retention.purged");
+  });
+
+  it("deletes conversation data on GDPR deletion requests", async () => {
+    const ownerId = "user_owner_delete";
+    const ownerInject = (options: InjectOptions) =>
+      injectAs(ownerId, options);
+
+    const tenantResponse = await ownerInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Deletion Tenant",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await ownerInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Deletion Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const channelResponse = await ownerInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "web_widget",
+        config: { allowedDomains: ["delete.example.no"] }
+      }
+    });
+    const channel = channelResponse.json();
+
+    const conversationResponse = await ownerInject({
+      method: "POST",
+      url: "/conversations",
+      payload: {
+        agentId: agent.id,
+        channelId: channel.id,
+        userId: "user_delete"
+      }
+    });
+    expect(conversationResponse.statusCode).toBe(201);
+
+    const deleteResponse = await ownerInject({
+      method: "POST",
+      url: `/tenants/${tenant.id}/gdpr/deletion-requests`,
+      payload: {
+        userId: "user_delete"
+      }
+    });
+    expect(deleteResponse.statusCode).toBe(200);
+    expect(deleteResponse.json().deletedConversations).toBe(1);
+
+    const listResponse = await ownerInject({
+      method: "GET",
+      url: `/conversations?agentId=${agent.id}&userId=user_delete`
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json().items).toHaveLength(0);
+
+    const auditResponse = await ownerInject({
+      method: "GET",
+      url: `/tenants/${tenant.id}/audit-logs`
+    });
+    expect(auditResponse.statusCode).toBe(200);
+    const auditActions = auditResponse.json().items.map(
+      (item: { action: string }) => item.action
+    );
+    expect(auditActions).toContain("gdpr.deletion_requested");
   });
 });

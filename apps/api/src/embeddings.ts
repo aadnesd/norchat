@@ -7,7 +7,7 @@ const normalizeToken = (token: string) => {
   return token;
 };
 
-const tokenize = (text: string) =>
+export const tokenizeText = (text: string) =>
   text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/giu, " ")
@@ -17,7 +17,7 @@ const tokenize = (text: string) =>
 
 export const buildEmbedding = (text: string): Embedding => {
   const embedding: Embedding = {};
-  for (const token of tokenize(text)) {
+  for (const token of tokenizeText(text)) {
     embedding[token] = (embedding[token] ?? 0) + 1;
   }
   return embedding;

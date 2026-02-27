@@ -1,7 +1,11 @@
-import { useMemo, useState } from "react";
-import { createApiClient } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  createApiClient,
+  type MetricConversation,
+  type MetricsSummary
+} from "../api";
 
-const apiBase = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000";
+const apiBase = import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:4000";
 const apiClient = createApiClient(apiBase);
 
 const steps = [
@@ -124,6 +128,34 @@ const mapJobToProgress = (job: IngestionJob) => {
   return 5;
 };
 
+const formatPercent = (value: number | null) => {
+  if (value === null) {
+    return "--";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+};
+
+const formatSeconds = (value: number | null) => {
+  if (value === null) {
+    return "--";
+  }
+  return `${Math.round(value)}s`;
+};
+
+const formatMillis = (value: number | null) => {
+  if (value === null) {
+    return "--";
+  }
+  return `${Math.round(value)}ms`;
+};
+
+const formatRating = (value: number | null) => {
+  if (value === null) {
+    return "--";
+  }
+  return value.toFixed(1);
+};
+
 export function App() {
   const [stepIndex, setStepIndex] = useState(0);
   const [workspaceName, setWorkspaceName] = useState("Nordic Care");
@@ -148,6 +180,49 @@ export function App() {
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [metricsSummary, setMetricsSummary] = useState<MetricsSummary | null>(null);
+  const [metricConversations, setMetricConversations] = useState<MetricConversation[]>([]);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  useEffect(() => {
+    let isActive = true;
+    if (!agent) {
+      setMetricsSummary(null);
+      setMetricConversations([]);
+      return () => {
+        isActive = false;
+      };
+    }
+    setMetricsLoading(true);
+    setMetricsError(null);
+    Promise.all([
+      apiClient.getMetricsSummary({ agentId: agent.id }),
+      apiClient.getMetricConversations({ agentId: agent.id, limit: 6 })
+    ])
+      .then(([summary, conversations]) => {
+        if (!isActive) {
+          return;
+        }
+        setMetricsSummary(summary);
+        setMetricConversations(conversations.items);
+      })
+      .catch((error) => {
+        if (!isActive) {
+          return;
+        }
+        setMetricsError(formatError(error));
+      })
+      .finally(() => {
+        if (!isActive) {
+          return;
+        }
+        setMetricsLoading(false);
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [agent]);
 
   const step = steps[stepIndex];
 
@@ -200,6 +275,20 @@ export function App() {
       }
     ];
   }, [activeChannel]);
+
+  const seriesMax = useMemo(() => {
+    if (!metricsSummary) {
+      return 0;
+    }
+    return metricsSummary.series.reduce(
+      (max, point) => Math.max(max, point.conversations),
+      0
+    );
+  }, [metricsSummary]);
+
+  const metricsWindowLabel = metricsSummary
+    ? `${metricsSummary.window.from.slice(0, 10)} → ${metricsSummary.window.to.slice(0, 10)}`
+    : "Last 7 days";
 
   const continueLabel = stepIndex === steps.length - 1 ? "Finish onboarding" : "Continue";
 
@@ -732,6 +821,174 @@ export function App() {
                 <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
                 <button type="button" className="primary">Open live chat</button>
               </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="observability">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Observability dashboard</h2>
+              <p className="muted">
+                Monitor deflection, response speed, and retrieval quality across channels.
+              </p>
+            </div>
+            <span className="badge">{metricsWindowLabel}</span>
+          </div>
+          {metricsError && <div className="notice error">{metricsError}</div>}
+          <div className="metric-grid">
+            <div className="metric-card">
+              <p className="metric-label">Deflection rate</p>
+              <p className="metric-value">
+                {formatPercent(metricsSummary ? metricsSummary.rates.deflectionRate : null)}
+              </p>
+              <p className="metric-meta">
+                {metricsSummary
+                  ? `${metricsSummary.totals.deflected} resolved · ${metricsSummary.totals.escalated} escalated`
+                  : "Awaiting first conversations"}
+              </p>
+            </div>
+            <div className="metric-card">
+              <p className="metric-label">First response</p>
+              <p className="metric-value">
+                {formatSeconds(
+                  metricsSummary ? metricsSummary.rates.avgFirstResponseSeconds : null
+                )}
+              </p>
+              <p className="metric-meta">Average time to first agent reply.</p>
+            </div>
+            <div className="metric-card">
+              <p className="metric-label">Resolution time</p>
+              <p className="metric-value">
+                {formatSeconds(
+                  metricsSummary ? metricsSummary.rates.avgResolutionSeconds : null
+                )}
+              </p>
+              <p className="metric-meta">Includes escalations.</p>
+            </div>
+            <div className="metric-card">
+              <p className="metric-label">Retrieval latency</p>
+              <p className="metric-value">
+                {formatMillis(
+                  metricsSummary ? metricsSummary.rates.avgRetrievalLatencyMs : null
+                )}
+              </p>
+              <p className="metric-meta">
+                {metricsSummary ? `${metricsSummary.totals.retrievals} searches` : "—"}
+              </p>
+            </div>
+            <div className="metric-card">
+              <p className="metric-label">Feedback score</p>
+              <p className="metric-value">
+                {formatRating(
+                  metricsSummary ? metricsSummary.rates.avgFeedbackRating : null
+                )}
+              </p>
+              <p className="metric-meta">
+                {metricsSummary ? `${metricsSummary.totals.feedbackCount} ratings` : "—"}
+              </p>
+            </div>
+            <div className="metric-card">
+              <p className="metric-label">Ingestion completions</p>
+              <p className="metric-value">
+                {metricsSummary ? metricsSummary.totals.ingestionCompleted : "--"}
+              </p>
+              <p className="metric-meta">Last 7 days.</p>
+            </div>
+          </div>
+          <div className="series-grid">
+            <h3>Conversation volume</h3>
+            {metricsSummary && metricsSummary.series.length > 0 ? (
+              <div className="series-list">
+                {metricsSummary.series.map((point) => (
+                  <div key={point.date} className="series-row">
+                    <span className="series-label">{point.date.slice(5)}</span>
+                    <div className="series-bar">
+                      <span
+                        style={{
+                          width: seriesMax
+                            ? `${Math.max(
+                                6,
+                                (point.conversations / seriesMax) * 100
+                              )}%`
+                            : "6%"
+                        }}
+                      />
+                    </div>
+                    <span className="series-value">
+                      {point.conversations} / {point.deflections} deflected
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">Metrics will appear once conversations start flowing.</p>
+            )}
+          </div>
+          <div className="intent-grid">
+            <h3>Top intents</h3>
+            {metricsSummary && metricsSummary.topIntents.length > 0 ? (
+              <div className="intent-list">
+                {metricsSummary.topIntents.map((intent) => (
+                  <div key={intent.intent} className="intent-card">
+                    <p className="intent-title">{intent.intent}</p>
+                    <p className="intent-meta">{intent.count} conversations</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">Top intents will populate as conversations resolve.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Conversation review</h3>
+              <p className="muted">
+                Track live sessions with response times, intent, and escalation signals.
+              </p>
+            </div>
+            <span className="status">{metricsLoading ? "Refreshing" : "Live"}</span>
+          </div>
+          {!agent && (
+            <p className="muted">
+              Create an agent to start capturing conversation-level observability.
+            </p>
+          )}
+          {agent && metricConversations.length === 0 && !metricsLoading && (
+            <p className="muted">No conversations yet. Once customers chat, they appear here.</p>
+          )}
+          {agent && metricConversations.length > 0 && (
+            <div className="conversation-list">
+              {metricConversations.map((conversation) => (
+                <div key={conversation.conversationId} className="conversation-row">
+                  <div>
+                    <p className="conversation-id">{conversation.conversationId}</p>
+                    <p className="muted">
+                      {conversation.intent ?? "Intent pending"}
+                    </p>
+                  </div>
+                  <span className={`status-pill ${conversation.status}`}>
+                    {conversation.status}
+                  </span>
+                  <div>
+                    <p className="metric-label">First response</p>
+                    <p className="metric-value">
+                      {formatSeconds(conversation.firstResponseSeconds)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="metric-label">Resolution</p>
+                    <p className="metric-value">
+                      {formatSeconds(conversation.resolutionSeconds)}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

@@ -64,6 +64,11 @@ Tests: `npm run e2e -w apps/web -- --update-snapshots` regenerated baselines and
 Why: Listing stale conversations after retention expiry is a GDPR/compliance risk and can expose data that should no longer be visible.
 Tests: Conversation retention coverage in `apps/api/src/__tests__/api.spec.ts` (including the prior failing list case around line ~1486) now passes with zero stale rows returned when retention requires purge.
 
+16. Gap: tenant isolation on ingestion/retrieval endpoints is now enforced and closed.
+Why: Strict tenant-bound authorization/scoping is required to prevent cross-tenant data exposure and preserve multi-tenant data integrity.
+Tests: API integration coverage verifies cross-tenant ingestion create/status and retrieval requests are rejected, while same-tenant requests succeed.
+Implementation outcome: Ingestion and retrieval endpoints now consistently enforce tenant isolation, closing the previously tracked gap.
+
 ## Planned Tasks
 
-No planned tasks remain as of 2026-02-27.
+No planned tasks remain as of 2026-02-28.

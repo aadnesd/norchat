@@ -16,6 +16,20 @@ npm run dev
 
 Note: The API stores vector data under `data/vector-store` by default. Override with `VECTOR_STORE_DIR`. The web app uses `VITE_API_BASE_URL` (defaults to `http://localhost:4000`) to talk to the API.
 
+## Validation
+
+Run API tests:
+
+```bash
+npm run test -w apps/api
+```
+
+Run full build:
+
+```bash
+npm run build
+```
+
 ## Playwright Visual Tests
 
 Run visual tests for the web app with:

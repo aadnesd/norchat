@@ -1571,4 +1571,189 @@ describe("api routes", () => {
     );
     expect(auditActions).toContain("gdpr.deletion_requested");
   });
+
+  it("enforces tenant isolation for ingestion and retrieval endpoints", async () => {
+    const ownerInject = (options: InjectOptions) =>
+      injectAs("user_owner_isolation", options);
+    const otherInject = (options: InjectOptions) =>
+      injectAs("user_other_isolation", options);
+
+    const ownerTenantResponse = await ownerInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Isolation Owner Tenant",
+        region: "no"
+      }
+    });
+    expect(ownerTenantResponse.statusCode).toBe(201);
+    const ownerTenant = ownerTenantResponse.json();
+
+    const ownerAgentResponse = await ownerInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: ownerTenant.id,
+        name: "Isolation Owner Agent"
+      }
+    });
+    expect(ownerAgentResponse.statusCode).toBe(201);
+    const ownerAgent = ownerAgentResponse.json();
+
+    const ownerSourceResponse = await ownerInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: ownerAgent.id,
+        type: "text",
+        value: "Isolation source"
+      }
+    });
+    expect(ownerSourceResponse.statusCode).toBe(201);
+    const ownerSource = ownerSourceResponse.json();
+
+    const ownerIngestResponse = await ownerInject({
+      method: "POST",
+      url: `/sources/${ownerSource.id}/ingest-text`,
+      payload: {
+        text: "Owner-only refund policy: 14 days."
+      }
+    });
+    expect(ownerIngestResponse.statusCode).toBe(201);
+
+    const ownerJobResponse = await ownerInject({
+      method: "POST",
+      url: "/sources/file",
+      payload: {
+        agentId: ownerAgent.id,
+        filename: "owner.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 1234
+      }
+    });
+    expect(ownerJobResponse.statusCode).toBe(201);
+    const ownerJob = ownerJobResponse.json().job;
+
+    const otherTenantResponse = await otherInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Isolation Other Tenant",
+        region: "no"
+      }
+    });
+    expect(otherTenantResponse.statusCode).toBe(201);
+    const otherTenant = otherTenantResponse.json();
+
+    const otherAgentResponse = await otherInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: otherTenant.id,
+        name: "Isolation Other Agent"
+      }
+    });
+    expect(otherAgentResponse.statusCode).toBe(201);
+    const otherAgent = otherAgentResponse.json();
+
+    const crossTenantSourceCreate = await otherInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: ownerAgent.id,
+        type: "text",
+        value: "Should fail"
+      }
+    });
+    expect(crossTenantSourceCreate.statusCode).toBe(403);
+    expect(crossTenantSourceCreate.json().error).toBe("tenant_access_denied");
+
+    const crossTenantCrawlCreate = await otherInject({
+      method: "POST",
+      url: "/sources/crawl",
+      payload: {
+        agentId: ownerAgent.id,
+        startUrls: ["https://example.no"],
+        depthLimit: 1
+      }
+    });
+    expect(crossTenantCrawlCreate.statusCode).toBe(403);
+    expect(crossTenantCrawlCreate.json().error).toBe("tenant_access_denied");
+
+    const crossTenantFileCreate = await otherInject({
+      method: "POST",
+      url: "/sources/file",
+      payload: {
+        agentId: ownerAgent.id,
+        filename: "other.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 100
+      }
+    });
+    expect(crossTenantFileCreate.statusCode).toBe(403);
+    expect(crossTenantFileCreate.json().error).toBe("tenant_access_denied");
+
+    const crossTenantRetrieve = await otherInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: {
+        agentId: ownerAgent.id,
+        query: "refund policy"
+      }
+    });
+    expect(crossTenantRetrieve.statusCode).toBe(403);
+    expect(crossTenantRetrieve.json().error).toBe("tenant_access_denied");
+
+    const crossTenantSourceList = await otherInject({
+      method: "GET",
+      url: `/sources?agentId=${ownerAgent.id}`
+    });
+    expect(crossTenantSourceList.statusCode).toBe(403);
+    expect(crossTenantSourceList.json().error).toBe("tenant_access_denied");
+
+    const crossTenantJobList = await otherInject({
+      method: "GET",
+      url: `/ingestion-jobs?agentId=${ownerAgent.id}`
+    });
+    expect(crossTenantJobList.statusCode).toBe(403);
+    expect(crossTenantJobList.json().error).toBe("tenant_access_denied");
+
+    const crossTenantJobGet = await otherInject({
+      method: "GET",
+      url: `/ingestion-jobs/${ownerJob.id}`
+    });
+    expect(crossTenantJobGet.statusCode).toBe(403);
+    expect(crossTenantJobGet.json().error).toBe("tenant_access_denied");
+
+    const crossTenantJobStatusUpdate = await otherInject({
+      method: "POST",
+      url: `/ingestion-jobs/${ownerJob.id}/status`,
+      payload: {
+        status: "processing"
+      }
+    });
+    expect(crossTenantJobStatusUpdate.statusCode).toBe(403);
+    expect(crossTenantJobStatusUpdate.json().error).toBe("tenant_access_denied");
+
+    const crossTenantJobIngest = await otherInject({
+      method: "POST",
+      url: `/ingestion-jobs/${ownerJob.id}/ingest`,
+      payload: {
+        documents: [{ content: "Should not be ingested", metadata: { scope: "cross-tenant" } }]
+      }
+    });
+    expect(crossTenantJobIngest.statusCode).toBe(403);
+    expect(crossTenantJobIngest.json().error).toBe("tenant_access_denied");
+
+    const sameTenantSourceCreate = await otherInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: otherAgent.id,
+        type: "text",
+        value: "Other tenant source"
+      }
+    });
+    expect(sameTenantSourceCreate.statusCode).toBe(201);
+  });
 });

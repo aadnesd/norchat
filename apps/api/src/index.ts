@@ -2456,8 +2456,13 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   fastify.post("/sources", async (request, reply) => {
     const data = sourceSchema.parse(request.body);
-    if (!agents.has(data.agentId)) {
+    const agent = agents.get(data.agentId);
+    if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const id = `source_${crypto.randomUUID()}`;
     const source: Source = {
@@ -2475,8 +2480,13 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   fastify.post("/sources/crawl", async (request, reply) => {
     const data = crawlConfigSchema.parse(request.body);
-    if (!agents.has(data.agentId)) {
+    const agent = agents.get(data.agentId);
+    if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const sourceId = `source_${crypto.randomUUID()}`;
     const source: Source = {
@@ -2508,8 +2518,13 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   fastify.post("/sources/file", async (request, reply) => {
     const data = fileIngestionSchema.parse(request.body);
-    if (!agents.has(data.agentId)) {
+    const agent = agents.get(data.agentId);
+    if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const sourceId = `source_${crypto.randomUUID()}`;
     const source: Source = {
@@ -2548,6 +2563,10 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const agent = agents.get(source.agentId);
     if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const tenant = tenants.get(agent.tenantId);
     if (!tenant) {
@@ -2611,14 +2630,36 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return reply.code(201).send({ chunks: createdChunks });
   });
 
-  fastify.get("/ingestion-jobs", async (request) => {
+  fastify.get("/ingestion-jobs", async (request, reply) => {
     const schema = z.object({
       agentId: z.string().optional(),
       sourceId: z.string().optional(),
       status: ingestionJobStatusSchema.optional()
     });
     const data = schema.parse(request.query);
-    let items = Array.from(ingestionJobs.values());
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return reply;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+
+    if (data.agentId) {
+      const tenantId = getTenantIdForAgent(data.agentId);
+      if (tenantId && !allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+    }
+    if (data.sourceId) {
+      const tenantId = getTenantIdForSource(data.sourceId);
+      if (tenantId && !allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+    }
+
+    let items = Array.from(ingestionJobs.values()).filter((job) => {
+      const tenantId = getTenantIdForIngestionJob(job.id);
+      return tenantId ? allowedTenantIds.has(tenantId) : false;
+    });
     if (data.sourceId) {
       items = items.filter((job) => job.sourceId === data.sourceId);
     }
@@ -2641,6 +2682,18 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
     }
+    const source = sources.get(job.sourceId);
+    if (!source) {
+      return reply.code(404).send({ error: "source_not_found" });
+    }
+    const agent = agents.get(source.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "viewer");
+    if (!access) {
+      return reply;
+    }
     return { job };
   });
 
@@ -2653,38 +2706,47 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
     }
+    const source = sources.get(job.sourceId);
+    if (!source) {
+      return reply.code(404).send({ error: "source_not_found" });
+    }
+    const agent = agents.get(source.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
+    }
     const updatedJob: IngestionJob = { ...job, status };
     ingestionJobs.set(id, updatedJob);
 
-    const source = sources.get(updatedJob.sourceId);
-    if (source) {
-      let nextStatus: Source["status"] = source.status;
-      if (status === "processing") {
-        nextStatus = "processing";
-      } else if (status === "complete") {
-        nextStatus = "ready";
-      } else if (status === "failed") {
-        nextStatus = "failed";
-      } else if (status === "queued") {
-        nextStatus = "queued";
-      }
-      sources.set(source.id, {
-        ...source,
-        status: nextStatus,
-        lastSyncedAt: status === "complete" ? new Date().toISOString() : source.lastSyncedAt
+    let nextStatus: Source["status"] = source.status;
+    if (status === "processing") {
+      nextStatus = "processing";
+    } else if (status === "complete") {
+      nextStatus = "ready";
+    } else if (status === "failed") {
+      nextStatus = "failed";
+    } else if (status === "queued") {
+      nextStatus = "queued";
+    }
+    sources.set(source.id, {
+      ...source,
+      status: nextStatus,
+      lastSyncedAt: status === "complete" ? new Date().toISOString() : source.lastSyncedAt
+    });
+    if (status === "complete") {
+      recordMetricEvent({
+        type: "ingestion_completed",
+        agentId: source.agentId,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          sourceId: source.id,
+          jobId: updatedJob.id,
+          kind: updatedJob.kind
+        }
       });
-      if (status === "complete") {
-        recordMetricEvent({
-          type: "ingestion_completed",
-          agentId: source.agentId,
-          timestamp: new Date().toISOString(),
-          metadata: {
-            sourceId: source.id,
-            jobId: updatedJob.id,
-            kind: updatedJob.kind
-          }
-        });
-      }
     }
 
     return { job: updatedJob };
@@ -2705,6 +2767,10 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const agent = agents.get(source.agentId);
     if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const tenant = tenants.get(agent.tenantId);
     if (!tenant) {
@@ -2792,16 +2858,32 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     });
   });
 
-  fastify.get("/sources", async (request) => {
+  fastify.get("/sources", async (request, reply) => {
     const schema = z.object({
       agentId: z.string().optional()
     });
     const data = schema.parse(request.query);
-    const items = Array.from(sources.values());
-    if (!data.agentId) {
-      return { items };
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return reply;
     }
-    return { items: items.filter((source) => source.agentId === data.agentId) };
+    const allowedTenantIds = getTenantIdsForUser(userId);
+
+    if (data.agentId) {
+      const tenantId = getTenantIdForAgent(data.agentId);
+      if (tenantId && !allowedTenantIds.has(tenantId)) {
+        return reply.code(403).send({ error: "tenant_access_denied" });
+      }
+    }
+
+    let items = Array.from(sources.values()).filter((source) => {
+      const tenantId = getTenantIdForAgent(source.agentId);
+      return tenantId ? allowedTenantIds.has(tenantId) : false;
+    });
+    if (data.agentId) {
+      items = items.filter((source) => source.agentId === data.agentId);
+    }
+    return { items };
   });
 
   fastify.post("/sources/:id/retrain", async (request, reply) => {
@@ -2810,6 +2892,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const source = sources.get(id);
     if (!source) {
       return reply.code(404).send({ error: "source_not_found" });
+    }
+    const agent = agents.get(source.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     const updated: Source = {
       ...source,
@@ -2823,8 +2913,17 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
   fastify.delete("/sources/:id", async (request, reply) => {
     const paramsSchema = z.object({ id: z.string().min(1) });
     const { id } = paramsSchema.parse(request.params);
-    if (!sources.has(id)) {
+    const source = sources.get(id);
+    if (!source) {
       return reply.code(404).send({ error: "source_not_found" });
+    }
+    const agent = agents.get(source.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
     }
     sources.delete(id);
     return reply.code(204).send();
@@ -2865,6 +2964,10 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const agent = agents.get(data.agentId);
     if (!agent) {
       return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "viewer");
+    if (!access) {
+      return reply;
     }
     const tenant = tenants.get(agent.tenantId);
     if (!tenant) {

@@ -43,3 +43,8 @@ explicit verification.
 
 - SLA definition for ingestion/retrain success is not codified in tests; consider
   adding explicit timing checks or operational SLO tracking.
+
+## Validation Runs
+
+- 2026-03-01: `npm run test -w apps/api` (pass). Confirms API-level coverage for
+  ingestion, retrieval, actions, widget streaming, and GDPR behaviors.

@@ -196,6 +196,8 @@ export type ActionType =
   | "schedule"
   | "billing"
   | "stripe_billing"
+  | "stripe_subscription"
+  | "stripe_refund"
   | "calendly_schedule"
   | "calcom_schedule"
   | "salesforce_ticket"
@@ -216,6 +218,32 @@ export type ActionCreateInput = {
   type: ActionType;
   config?: Record<string, unknown>;
   enabled?: boolean;
+};
+
+/** Stripe billing action configuration. */
+export type StripeBillingConfig = {
+  currency?: string;
+  defaultAmount?: number;
+  allowCustomAmount?: boolean;
+  stripeApiKey?: string;
+};
+
+/** Stripe subscription action payload. */
+export type StripeSubscriptionPayload = {
+  customerId: string;
+  priceId: string;
+  quantity?: number;
+  trialDays?: number;
+  action: "create" | "cancel" | "retrieve";
+  subscriptionId?: string;
+  cancelAtPeriodEnd?: boolean;
+};
+
+/** Stripe refund action payload. */
+export type StripeRefundPayload = {
+  invoiceId: string;
+  amount?: number;
+  reason?: "duplicate" | "fraudulent" | "requested_by_customer";
 };
 
 export type ChannelType =

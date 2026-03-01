@@ -17,7 +17,7 @@ import {
   type VectorRecord
 } from "./vector-store.js";
 import { buildHelpPage, buildWidgetScript } from "./ui-templates.js";
-import { createStripeClient, type StripeClient } from "./stripe-client.js";
+import { createStripeClient, StripeError, type StripeClient } from "./stripe-client.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -212,6 +212,8 @@ const actionTypeSchema = z.enum([
   "schedule",
   "billing",
   "stripe_billing",
+  "stripe_subscription",
+  "stripe_refund",
   "calendly_schedule",
   "calcom_schedule",
   "salesforce_ticket",
@@ -334,6 +336,22 @@ const billingPayloadSchema = z.object({
   amount: z.number().positive().optional(),
   currency: z.string().min(3).max(3).optional(),
   description: z.string().min(1).optional()
+});
+
+const subscriptionPayloadSchema = z.object({
+  customerId: z.string().min(1),
+  priceId: z.string().min(1).optional(),
+  quantity: z.number().int().positive().optional(),
+  trialDays: z.number().int().nonnegative().optional(),
+  action: z.enum(["create", "cancel", "retrieve"]),
+  subscriptionId: z.string().min(1).optional(),
+  cancelAtPeriodEnd: z.boolean().optional()
+});
+
+const refundPayloadSchema = z.object({
+  invoiceId: z.string().min(1),
+  amount: z.number().positive().optional(),
+  reason: z.enum(["duplicate", "fraudulent", "requested_by_customer"]).optional()
 });
 
 const notionSourceSchema = z.object({
@@ -1039,6 +1057,8 @@ const normalizeActionConfig = (
       return parseWithSchema(ticketConfigSchema, config ?? {}, "invalid_ticket_config");
     case "stripe_billing":
     case "billing":
+    case "stripe_subscription":
+    case "stripe_refund":
       return parseWithSchema(billingConfigSchema, config ?? {}, "invalid_billing_config");
     default:
       return config ?? {};
@@ -1116,17 +1136,19 @@ const executeAction = (
           ? action.config.stripeApiKey
           : undefined;
       const stripe = createStripeClient({ apiKey: stripeApiKey });
-      const invoice = stripe.createInvoice({
+
+      // Use SDK-style namespaced methods
+      const invoice = stripe.invoices.create({
         customerId: input.customerId,
         amount,
         currency,
         description: input.description,
         dueInDays: 30
       });
-      const paymentLink = stripe.createPaymentLink({
+      const paymentLink = stripe.paymentLinks.create({
         invoiceId: invoice.id
       });
-      const customer = stripe.getCustomer(input.customerId);
+      const customer = stripe.customers.retrieve(input.customerId);
       return {
         input,
         output: {
@@ -1138,6 +1160,7 @@ const executeAction = (
             status: invoice.status,
             description: invoice.description,
             dueDate: invoice.dueDate,
+            hostedInvoiceUrl: invoice.hostedInvoiceUrl,
             createdAt,
             paymentLink: paymentLink.url,
             livemode: invoice.livemode
@@ -1149,6 +1172,130 @@ const executeAction = (
           }
         }
       };
+    }
+    case "stripe_subscription": {
+      const input = parseWithSchema(subscriptionPayloadSchema, payload ?? {}, "invalid_subscription_payload");
+      const stripeApiKey =
+        action.config && typeof action.config.stripeApiKey === "string"
+          ? action.config.stripeApiKey
+          : undefined;
+      const stripe = createStripeClient({ apiKey: stripeApiKey });
+
+      try {
+        switch (input.action) {
+          case "create": {
+            if (!input.priceId) {
+              throw new ActionExecutionError("subscription_price_required", 400);
+            }
+            const sub = stripe.subscriptions.create({
+              customerId: input.customerId,
+              priceId: input.priceId,
+              quantity: input.quantity,
+              trialDays: input.trialDays
+            });
+            return {
+              input,
+              output: {
+                subscription: {
+                  id: sub.id,
+                  customerId: sub.customerId,
+                  status: sub.status,
+                  currentPeriodStart: sub.currentPeriodStart,
+                  currentPeriodEnd: sub.currentPeriodEnd,
+                  cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+                  items: sub.items,
+                  createdAt,
+                  livemode: sub.livemode
+                }
+              }
+            };
+          }
+          case "cancel": {
+            if (!input.subscriptionId) {
+              throw new ActionExecutionError("subscription_id_required", 400);
+            }
+            const canceled = stripe.subscriptions.cancel(input.subscriptionId, {
+              cancelAtPeriodEnd: input.cancelAtPeriodEnd
+            });
+            return {
+              input,
+              output: {
+                subscription: {
+                  id: canceled.id,
+                  customerId: canceled.customerId,
+                  status: canceled.status,
+                  cancelAtPeriodEnd: canceled.cancelAtPeriodEnd,
+                  canceledAt: canceled.canceledAt,
+                  livemode: canceled.livemode
+                }
+              }
+            };
+          }
+          case "retrieve": {
+            if (!input.subscriptionId) {
+              throw new ActionExecutionError("subscription_id_required", 400);
+            }
+            const sub = stripe.subscriptions.retrieve(input.subscriptionId);
+            return {
+              input,
+              output: {
+                subscription: {
+                  id: sub.id,
+                  customerId: sub.customerId,
+                  status: sub.status,
+                  currentPeriodStart: sub.currentPeriodStart,
+                  currentPeriodEnd: sub.currentPeriodEnd,
+                  cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+                  items: sub.items,
+                  livemode: sub.livemode
+                }
+              }
+            };
+          }
+        }
+        break;
+      } catch (err) {
+        if (err instanceof StripeError) {
+          throw new ActionExecutionError(err.message, err.statusCode);
+        }
+        throw err;
+      }
+    }
+    case "stripe_refund": {
+      const input = parseWithSchema(refundPayloadSchema, payload ?? {}, "invalid_refund_payload");
+      const stripeApiKey =
+        action.config && typeof action.config.stripeApiKey === "string"
+          ? action.config.stripeApiKey
+          : undefined;
+      const stripe = createStripeClient({ apiKey: stripeApiKey });
+
+      try {
+        const refund = stripe.refunds.create({
+          invoiceId: input.invoiceId,
+          amount: input.amount,
+          reason: input.reason
+        });
+        return {
+          input,
+          output: {
+            refund: {
+              id: refund.id,
+              invoiceId: refund.invoiceId,
+              amount: refund.amount,
+              currency: refund.currency,
+              status: refund.status,
+              reason: refund.reason,
+              createdAt,
+              livemode: refund.livemode
+            }
+          }
+        };
+      } catch (err) {
+        if (err instanceof StripeError) {
+          throw new ActionExecutionError(err.message, err.statusCode);
+        }
+        throw err;
+      }
     }
     default:
       throw new ActionExecutionError("action_type_not_supported", 400);

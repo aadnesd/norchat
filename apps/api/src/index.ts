@@ -8,7 +8,8 @@ import path from "node:path";
 import {
   buildChatPrompt,
   buildChatResponse,
-  chunkResponseForStreaming
+  chunkResponseForStreaming,
+  type SourceCitationInfo
 } from "./chat-runtime.js";
 import { buildEmbedding } from "./embeddings.js";
 import {
@@ -1432,6 +1433,55 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return { userId, membership };
   };
 
+  const buildSourceLookup = (
+    sourceIds: Set<string>
+  ): Map<string, SourceCitationInfo> => {
+    const lookup = new Map<string, SourceCitationInfo>();
+    for (const sourceId of sourceIds) {
+      const source = sources.get(sourceId);
+      if (!source) {
+        continue;
+      }
+      let sourceUrl: string | undefined;
+      let sourceTitle: string | undefined;
+      if (source.type === "website" && source.value) {
+        sourceUrl = source.value;
+        sourceTitle = source.value;
+      } else if (source.type === "file") {
+        const fileConfig = source.config as
+          | { filename?: string }
+          | undefined;
+        sourceTitle = fileConfig?.filename ?? source.value;
+      } else if (source.type === "text") {
+        const textConfig = source.config as
+          | { title?: string }
+          | undefined;
+        sourceTitle = textConfig?.title ?? source.value;
+      } else if (source.type === "notion") {
+        const notionConfig = source.config as
+          | { workspaceId?: string }
+          | undefined;
+        sourceTitle = notionConfig?.workspaceId
+          ? `Notion (${notionConfig.workspaceId})`
+          : "Notion";
+      } else if (source.type === "qa") {
+        sourceTitle = source.value ?? "Q&A";
+      } else if (source.type === "ticketing") {
+        const ticketConfig = source.config as
+          | { provider?: string }
+          | undefined;
+        sourceTitle = ticketConfig?.provider ?? "Ticketing";
+      }
+      lookup.set(sourceId, {
+        sourceId,
+        sourceType: source.type,
+        sourceUrl,
+        sourceTitle
+      });
+    }
+    return lookup;
+  };
+
   const runChatFlow = async (input: {
     agentId: string;
     message: string;
@@ -1466,12 +1516,19 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       score: item.score,
       metadata: item.chunk.metadata
     }));
+    const referencedSourceIds = new Set(context.map((c) => c.sourceId));
+    const sourceLookup = buildSourceLookup(referencedSourceIds);
     const prompt = buildChatPrompt({
       basePrompt: agent.basePrompt,
       message: input.message,
-      context
+      context,
+      sourceLookup
     });
-    const response = buildChatResponse({ message: input.message, context });
+    const response = buildChatResponse({
+      message: input.message,
+      context,
+      sourceLookup
+    });
     return { agent, tenant, response, prompt, context };
   };
 
@@ -3207,12 +3264,18 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const createdAt = new Date().toISOString();
     const chunkCount = textChunks.length;
     const vectorRecords: VectorRecord[] = [];
+    const sourceInfo = buildSourceLookup(new Set([source.id])).get(source.id);
     const createdChunks = textChunks.map((content, index) => {
       const chunkId = `chunk_${crypto.randomUUID()}`;
       const metadata: Record<string, unknown> = {
         ...data.metadata,
         chunkIndex: index,
-        chunkCount
+        chunkCount,
+        sourceType: sourceInfo?.sourceType,
+        ...(sourceInfo?.sourceUrl ? { sourceUrl: sourceInfo.sourceUrl } : {}),
+        ...(sourceInfo?.sourceTitle
+          ? { sourceTitle: sourceInfo.sourceTitle }
+          : {})
       };
       vectorRecords.push({
         id: chunkId,
@@ -3414,6 +3477,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       createdAt: string;
     }> = [];
     const vectorRecords: VectorRecord[] = [];
+    const sourceInfo = buildSourceLookup(new Set([source.id])).get(source.id);
 
     data.documents.forEach((document, documentIndex) => {
       const textChunks = splitIntoChunks(document.content, {
@@ -3428,7 +3492,12 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
           ...document.metadata,
           documentIndex,
           chunkIndex,
-          chunkCount
+          chunkCount,
+          sourceType: sourceInfo?.sourceType,
+          ...(sourceInfo?.sourceUrl ? { sourceUrl: sourceInfo.sourceUrl } : {}),
+          ...(sourceInfo?.sourceTitle
+            ? { sourceTitle: sourceInfo.sourceTitle }
+            : {})
         };
         vectorRecords.push({
           id: chunkId,

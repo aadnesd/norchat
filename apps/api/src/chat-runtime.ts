@@ -6,15 +6,32 @@ export type ChatContextChunk = {
   metadata?: Record<string, unknown>;
 };
 
+export type SourceCitationInfo = {
+  sourceId: string;
+  sourceType: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+};
+
 export type ChatPromptInput = {
   basePrompt?: string;
   message: string;
   context: ChatContextChunk[];
 };
 
+export type EnrichedSource = {
+  chunkId: string;
+  sourceId: string;
+  sourceType?: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  score: number;
+  excerpt?: string;
+};
+
 export type ChatResponse = {
   message: string;
-  sources: Array<Pick<ChatContextChunk, "id" | "sourceId" | "score">>;
+  sources: EnrichedSource[];
   confidence: number;
   shouldEscalate: boolean;
 };
@@ -26,12 +43,15 @@ const DEFAULT_PROMPT =
 export const buildChatPrompt = ({
   basePrompt,
   message,
-  context
-}: ChatPromptInput) => {
+  context,
+  sourceLookup
+}: ChatPromptInput & { sourceLookup?: Map<string, SourceCitationInfo> }) => {
   const promptParts = [basePrompt ?? DEFAULT_PROMPT, ""];
   if (context.length > 0) {
     const contextLines = context.map((chunk, index) => {
-      return `[${index + 1}] (${chunk.sourceId}) ${chunk.content}`;
+      const info = sourceLookup?.get(chunk.sourceId);
+      const label = info?.sourceTitle ?? info?.sourceUrl ?? chunk.sourceId;
+      return `[${index + 1}] (${label}) ${chunk.content}`;
     });
     promptParts.push("Sources:");
     promptParts.push(...contextLines);
@@ -59,12 +79,23 @@ const calculateConfidence = (context: ChatContextChunk[]) => {
   return Math.max(0, Math.min(1, average));
 };
 
+const EXCERPT_MAX_LENGTH = 200;
+
+const buildExcerpt = (content: string): string => {
+  if (content.length <= EXCERPT_MAX_LENGTH) {
+    return content.trim();
+  }
+  return content.slice(0, EXCERPT_MAX_LENGTH).trim() + "…";
+};
+
 export const buildChatResponse = ({
   message,
-  context
+  context,
+  sourceLookup
 }: {
   message: string;
   context: ChatContextChunk[];
+  sourceLookup?: Map<string, SourceCitationInfo>;
 }): ChatResponse => {
   if (context.length === 0) {
     return {
@@ -85,11 +116,23 @@ export const buildChatResponse = ({
 
   return {
     message: responseMessage,
-    sources: context.map((chunk) => ({
-      id: chunk.id,
-      sourceId: chunk.sourceId,
-      score: chunk.score
-    })),
+    sources: context.map((chunk) => {
+      const info = sourceLookup?.get(chunk.sourceId);
+      const metaTitle =
+        chunk.metadata?.["sourceTitle"] as string | undefined;
+      const metaUrl = chunk.metadata?.["sourceUrl"] as string | undefined;
+      const metaType =
+        chunk.metadata?.["sourceType"] as string | undefined;
+      return {
+        chunkId: chunk.id,
+        sourceId: chunk.sourceId,
+        sourceType: info?.sourceType ?? metaType,
+        sourceUrl: info?.sourceUrl ?? metaUrl,
+        sourceTitle: info?.sourceTitle ?? metaTitle,
+        score: chunk.score,
+        excerpt: buildExcerpt(chunk.content)
+      };
+    }),
     confidence,
     shouldEscalate: confidence < 0.35
   };

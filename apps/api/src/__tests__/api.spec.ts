@@ -2545,4 +2545,162 @@ describe("api routes", () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().error).toBe("agent_not_found");
   });
+
+  it("returns enriched source citations with URL and title for website source", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Citation Test Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Citation Agent" }
+    });
+    const agent = agentRes.json();
+
+    const sourceRes = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: agent.id,
+        type: "website",
+        value: "https://example.no/hjelp"
+      }
+    });
+    const source = sourceRes.json();
+
+    await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: {
+        text: "Vi tilbyr gratis retur innen 14 dager etter kjop. Kontakt kundeservice for returetiketter.",
+        chunkSize: 10,
+        chunkOverlap: 0
+      }
+    });
+
+    const chatRes = await adminInject({
+      method: "POST",
+      url: "/chat",
+      payload: { agentId: agent.id, message: "retur" }
+    });
+
+    expect(chatRes.statusCode).toBe(200);
+    const body = chatRes.json();
+    expect(body.sources.length).toBeGreaterThan(0);
+
+    const citation = body.sources[0];
+    expect(citation.chunkId).toMatch(/^chunk_/u);
+    expect(citation.sourceId).toBe(source.id);
+    expect(citation.sourceType).toBe("website");
+    expect(citation.sourceUrl).toBe("https://example.no/hjelp");
+    expect(citation.sourceTitle).toBe("https://example.no/hjelp");
+    expect(citation.score).toBeGreaterThan(0);
+    expect(citation.excerpt).toBeDefined();
+    expect(typeof citation.excerpt).toBe("string");
+  });
+
+  it("enriches chunk metadata with source info during text ingestion", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Metadata Test Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Metadata Agent" }
+    });
+    const agent = agentRes.json();
+
+    const sourceRes = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: agent.id,
+        type: "text",
+        value: "billing-faq",
+        config: { title: "Billing FAQ" }
+      }
+    });
+    const source = sourceRes.json();
+
+    const ingestRes = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: {
+        text: "Faktura sendes den forste i hver maned. Betaling forfaller innen 14 dager.",
+        chunkSize: 8,
+        chunkOverlap: 0
+      }
+    });
+
+    expect(ingestRes.statusCode).toBe(201);
+    const chunks = ingestRes.json().chunks;
+    expect(chunks.length).toBeGreaterThan(0);
+
+    const chunk = chunks[0];
+    expect(chunk.metadata.sourceType).toBe("text");
+    expect(chunk.metadata.sourceTitle).toBe("Billing FAQ");
+    expect(chunk.metadata.sourceUrl).toBeUndefined();
+  });
+
+  it("includes source citation info in chat prompt labels", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Prompt Label Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Prompt Label Agent",
+        basePrompt: "Du er en hjelpebot."
+      }
+    });
+    const agent = agentRes.json();
+
+    const sourceRes = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: {
+        agentId: agent.id,
+        type: "website",
+        value: "https://docs.example.no/api"
+      }
+    });
+    const source = sourceRes.json();
+
+    await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: {
+        text: "API-nokkelen finnes i innstillingene under konto-seksjonen.",
+        chunkSize: 8,
+        chunkOverlap: 0
+      }
+    });
+
+    const chatRes = await adminInject({
+      method: "POST",
+      url: "/chat",
+      payload: { agentId: agent.id, message: "API-nokkel" }
+    });
+
+    expect(chatRes.statusCode).toBe(200);
+    const body = chatRes.json();
+    // The prompt should use the source URL as the label
+    expect(body.prompt).toContain("https://docs.example.no/api");
+    // Should NOT contain the raw source ID in the prompt
+    expect(body.prompt).not.toContain(source.id);
+  });
 });

@@ -152,6 +152,16 @@ export type RetrievalResponse = {
   items: RetrievalResult[];
 };
 
+export type SourceCitation = {
+  chunkId: string;
+  sourceId: string;
+  sourceType: SourceType;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  score: number;
+  excerpt?: string;
+};
+
 export type CrawlConfig = {
   agentId: string;
   startUrls: string[];

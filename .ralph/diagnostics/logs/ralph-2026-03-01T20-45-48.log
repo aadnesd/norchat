@@ -1,0 +1,36 @@
+2026-03-01T19:45:48.151883Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:48.151951Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:48.152829Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:48.152865Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:48.153032Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:49.166772Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:49.166790Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:49.166885Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:49.166900Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:49.166979Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:49.985016Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:49.985049Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:49.985188Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:49.985210Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:49.985324Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:50.788020Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:50.788043Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:50.788142Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:50.788157Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:50.788252Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:51.617485Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:51.617506Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:51.617606Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:51.617623Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:51.617714Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:52.518651Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:52.518682Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:52.518789Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:52.518812Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:52.518918Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:53.337342Z  INFO ralph_core::event_loop: Memory injection check: enabled=true, inject=Auto, workspace_root="/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase"
+2026-03-01T19:45:53.337373Z  INFO ralph_core::event_loop: Looking for memories at: "/Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/memories.md" (exists: true)
+2026-03-01T19:45:53.337479Z  INFO ralph_core::event_loop: Successfully loaded 14 memories from store
+2026-03-01T19:45:53.337496Z  INFO ralph_core::event_loop: Injecting 14 memories (3111 chars) into prompt
+2026-03-01T19:45:53.337599Z  INFO ralph_core::event_loop: Injecting ready tasks (0 ready, 0 open, 36 closed) into prompt
+2026-03-01T19:45:53.880074Z  INFO ralph_tui::app: Ctrl+C detected, signaling main loop

@@ -60,6 +60,22 @@
 
 ## Context
 
+### mem-1772397033-8f9e
+> StripeClient now has SDK-style resource-namespaced interface (stripe.invoices.create, stripe.subscriptions.cancel, etc.) with in-memory state, StripeError class with typed error codes, and legacy backward-compat methods. Action executor supports stripe_billing, stripe_subscription, and stripe_refund types. 90 tests total.
+<!-- tags: api, stripe, actions | created: 2026-03-01 -->
+
+### mem-1772396590-cfe7
+> Retrain endpoint supports two modes: 'auto' (re-ingests from sourceContentCache when available, sets status 'ready') and 'job' (creates queued ingestion job when no cached content). sourceContentCache stores raw text + chunking config per source, populated during ingest-text and job ingest. Cache cleaned up on source deletion.
+<!-- tags: api, retrain, ingestion | created: 2026-03-01 -->
+
+### mem-1772395240-24e8
+> GDPR vector chunk deletion implemented: LocalVectorStore has deleteBySourceId and deleteByAgentId methods. GDPR endpoint accepts deleteVectorData boolean flag. DELETE /sources/:id also cleans up vector chunks. All persist to JSONL.
+<!-- tags: api, gdpr, vector-store | created: 2026-03-01 -->
+
+### mem-1772394861-15b9
+> Notion source integration complete: POST /sources/notion (with safeParse validation), POST /webhooks/notion (verification + content change retrain), POST /sources/notion/sync-check (24h stale auto-retrain). notionSyncState Map tracks sync state per source. IngestionJob.kind now includes 'notion'. 8 tests added, 37 total pass.
+<!-- tags: api, notion, ingestion | created: 2026-03-01 -->
+
 ### mem-1771676624-1a2b
 > ran npm test after adding file ingestion endpoints and ingestion job tracking; tests passed
 <!-- tags: testing, ingestion, api | created: 2026-02-21 -->

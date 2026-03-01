@@ -17,7 +17,7 @@ import {
   type VectorRecord
 } from "./vector-store.js";
 import { buildHelpPage, buildWidgetScript } from "./ui-templates.js";
-import { createStripeClient, StripeError, type StripeClient } from "./stripe-client.js";
+import { createStripeClient, StripeError } from "./stripe-client.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -1434,7 +1434,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       : undefined;
   };
 
-  const requireUserId = (request: { headers: Record<string, unknown> }, reply: any) => {
+  const requireUserId = (request: { headers: Record<string, unknown> }, reply: { code: (statusCode: number) => { send: (body: unknown) => void } }) => {
     const userId = getUserIdFromRequest(request);
     if (!userId) {
       reply.code(401).send({ error: "user_required" });
@@ -1479,13 +1479,6 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       return undefined;
     }
     return getTenantIdForAgent(source.agentId);
-  };
-  const getTenantIdForAction = (actionId: string) => {
-    const action = actions.get(actionId);
-    if (!action) {
-      return undefined;
-    }
-    return getTenantIdForAgent(action.agentId);
   };
   const getTenantIdForConversation = (conversationId: string) => {
     const conversation = conversations.get(conversationId);
@@ -1623,7 +1616,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   const requireTenantRole = (
     request: { headers: Record<string, unknown> },
-    reply: any,
+    reply: { code: (statusCode: number) => { send: (body: unknown) => void } },
     tenantId: string,
     requiredRole: TenantRole
   ) => {
@@ -3836,10 +3829,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     }
     const tenant = tenants.get(agent.tenantId);
     // Clear old vector chunks for this source
-    let deletedChunks = 0;
-    if (tenant) {
-      deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
-    }
+    const deletedChunks = tenant
+      ? await vectorStore.deleteBySourceId(tenant.region, id)
+      : 0;
     const now = new Date().toISOString();
 
     // Check if we have cached content for automatic re-ingestion
@@ -3949,9 +3941,8 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       return reply;
     }
     const tenant = tenants.get(agent.tenantId);
-    let deletedChunks = 0;
     if (tenant) {
-      deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
+      await vectorStore.deleteBySourceId(tenant.region, id);
     }
     sources.delete(id);
     sourceContentCache.delete(id);

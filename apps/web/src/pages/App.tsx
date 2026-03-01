@@ -230,7 +230,7 @@ export function App() {
     if (!activeChannel) {
       return "Create a channel to generate your snippet.";
     }
-    return `<script src=\"${apiBase}/widget.js\" data-channel=\"${activeChannel.id}\" data-api-base=\"${apiBase}\"></script>`;
+    return `<script src="${apiBase}/widget.js" data-channel="${activeChannel.id}" data-api-base="${apiBase}"></script>`;
   }, [activeChannel]);
 
   const helpPageUrl = useMemo(() => {

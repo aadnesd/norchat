@@ -112,7 +112,7 @@ export const buildChatResponse = ({
   const responseMessage =
     summary.length > 0
       ? `${summary} If you need more details, I can pull additional sources.`
-      : `Here's what I found about \"${message}\". Let me know if you want more details.`;
+      : `Here's what I found about "${message}". Let me know if you want more details.`;
 
   return {
     message: responseMessage,

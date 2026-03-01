@@ -433,6 +433,10 @@ type IngestionJob = {
   kind: "crawl" | "file" | "notion";
   status: z.infer<typeof ingestionJobStatusSchema>;
   createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  slaMet?: boolean;
 };
 
 const normalizeAllowedDomain = (domain: string) => {
@@ -1345,6 +1349,8 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     }
   >();
   const NOTION_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const INGESTION_SLA_MS =
+    Number(process.env.INGESTION_SLA_MS ?? "") || 5 * 60 * 1000;
   // Cache ingested content per source so retrain can re-ingest automatically
   const sourceContentCache = new Map<
     string,
@@ -1394,6 +1400,31 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     auditEvents.push(event);
     ensureAuditCapacity();
     return event;
+  };
+
+  const computeIngestionDuration = (startedAt: string, completedAt: string) => {
+    const startMs = new Date(startedAt).getTime();
+    const endMs = new Date(completedAt).getTime();
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
+      return 0;
+    }
+    return Math.max(0, endMs - startMs);
+  };
+
+  const applyIngestionCompletion = (
+    job: IngestionJob,
+    completedAt: string
+  ): IngestionJob => {
+    const startedAt = job.startedAt ?? job.createdAt;
+    const durationMs = computeIngestionDuration(startedAt, completedAt);
+    return {
+      ...job,
+      status: "complete",
+      startedAt,
+      completedAt,
+      durationMs,
+      slaMet: durationMs <= INGESTION_SLA_MS
+    } satisfies IngestionJob;
   };
 
   const getUserIdFromRequest = (request: { headers: Record<string, unknown> }) => {
@@ -3594,7 +3625,17 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!access) {
       return reply;
     }
-    const updatedJob: IngestionJob = { ...job, status };
+    let updatedJob: IngestionJob = { ...job, status };
+    if (status === "processing") {
+      updatedJob = {
+        ...job,
+        status,
+        startedAt: job.startedAt ?? new Date().toISOString()
+      };
+    }
+    if (status === "complete") {
+      updatedJob = applyIngestionCompletion(job, new Date().toISOString());
+    }
     ingestionJobs.set(id, updatedJob);
 
     let nextStatus: Source["status"] = source.status;
@@ -3620,7 +3661,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         metadata: {
           sourceId: source.id,
           jobId: updatedJob.id,
-          kind: updatedJob.kind
+          kind: updatedJob.kind,
+          durationMs: updatedJob.durationMs,
+          slaMet: updatedJob.slaMet
         }
       });
     }
@@ -3724,10 +3767,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     sources.set(source.id, updatedSource);
 
-    const updatedJob: IngestionJob = {
-      ...job,
-      status: "complete"
-    };
+    const updatedJob: IngestionJob = applyIngestionCompletion(job, createdAt);
     ingestionJobs.set(job.id, updatedJob);
 
     recordMetricEvent({
@@ -3738,7 +3778,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         sourceId: source.id,
         jobId: job.id,
         kind: job.kind,
-        chunkCount: createdChunks.length
+        chunkCount: createdChunks.length,
+        durationMs: updatedJob.durationMs,
+        slaMet: updatedJob.slaMet
       }
     });
 

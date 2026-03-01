@@ -442,6 +442,8 @@ describe("api routes", () => {
     expect(completeResponse.statusCode).toBe(200);
     const completeBody = completeResponse.json();
     expect(completeBody.job.status).toBe("complete");
+    expect(completeBody.job.durationMs).toBeGreaterThanOrEqual(0);
+    expect(completeBody.job.slaMet).toBe(true);
   });
 
   it("ingests text chunks and retrieves relevant content", async () => {
@@ -583,7 +585,10 @@ describe("api routes", () => {
       url: `/ingestion-jobs/${fileBody.job.id}`
     });
     expect(jobResponse.statusCode).toBe(200);
-    expect(jobResponse.json().job.status).toBe("complete");
+    const jobBody = jobResponse.json().job;
+    expect(jobBody.status).toBe("complete");
+    expect(jobBody.durationMs).toBeGreaterThanOrEqual(0);
+    expect(jobBody.slaMet).toBe(true);
 
     const retrieveResponse = await adminInject({
       method: "POST",

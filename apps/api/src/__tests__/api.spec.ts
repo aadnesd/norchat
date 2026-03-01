@@ -1946,6 +1946,150 @@ describe("api routes", () => {
     expect(auditActions).toContain("gdpr.deletion_requested");
   });
 
+  it("deletes vector chunks on GDPR deletion when deleteVectorData is true", async () => {
+    const ownerId = "user_owner_gdpr_vector";
+    const ownerInject = (options: InjectOptions) =>
+      injectAs(ownerId, options);
+
+    const tenantResponse = await ownerInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "GDPR Vector Tenant", region: "norway-oslo" }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await ownerInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "GDPR Vector Agent" }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await ownerInject({
+      method: "POST",
+      url: "/sources",
+      payload: { agentId: agent.id, type: "text", value: "GDPR test source" }
+    });
+    const source = sourceResponse.json();
+
+    const ingestResponse = await ownerInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: { text: "GDPR vector chunk content for testing deletion." }
+    });
+    expect(ingestResponse.statusCode).toBe(201);
+
+    // Verify chunks are retrievable before deletion
+    const retrieveBefore = await ownerInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "GDPR vector chunk", minScore: 0 }
+    });
+    expect(retrieveBefore.statusCode).toBe(200);
+    expect(retrieveBefore.json().items.length).toBeGreaterThan(0);
+
+    // Create a conversation for the deletion request
+    const channelResponse = await ownerInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "web_widget",
+        config: { allowedDomains: ["gdpr-vec.example.no"] }
+      }
+    });
+    const channel = channelResponse.json();
+
+    await ownerInject({
+      method: "POST",
+      url: "/conversations",
+      payload: { agentId: agent.id, channelId: channel.id, userId: "gdpr_user" }
+    });
+
+    // Delete with deleteVectorData flag
+    const deleteResponse = await ownerInject({
+      method: "POST",
+      url: `/tenants/${tenant.id}/gdpr/deletion-requests`,
+      payload: {
+        userId: "gdpr_user",
+        agentId: agent.id,
+        deleteVectorData: true
+      }
+    });
+    expect(deleteResponse.statusCode).toBe(200);
+    const deleteResult = deleteResponse.json();
+    expect(deleteResult.deletedConversations).toBe(1);
+    expect(deleteResult.deletedChunks).toBeGreaterThan(0);
+
+    // Verify chunks are gone after deletion
+    const retrieveAfter = await ownerInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "GDPR vector chunk", minScore: 0 }
+    });
+    expect(retrieveAfter.statusCode).toBe(200);
+    expect(retrieveAfter.json().items).toHaveLength(0);
+  });
+
+  it("deletes vector chunks when a source is deleted", async () => {
+    const ownerId = "user_owner_source_delete";
+    const ownerInject = (options: InjectOptions) =>
+      injectAs(ownerId, options);
+
+    const tenantResponse = await ownerInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Source Delete Tenant", region: "norway-oslo" }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await ownerInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Source Delete Agent" }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await ownerInject({
+      method: "POST",
+      url: "/sources",
+      payload: { agentId: agent.id, type: "text", value: "Source to delete" }
+    });
+    const source = sourceResponse.json();
+
+    const ingestResponse = await ownerInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: { text: "Content from the source that will be deleted." }
+    });
+    expect(ingestResponse.statusCode).toBe(201);
+
+    // Verify chunks exist before source deletion
+    const retrieveBefore = await ownerInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "source that will be deleted", minScore: 0 }
+    });
+    expect(retrieveBefore.statusCode).toBe(200);
+    expect(retrieveBefore.json().items.length).toBeGreaterThan(0);
+
+    // Delete the source
+    const deleteSourceResponse = await ownerInject({
+      method: "DELETE",
+      url: `/sources/${source.id}`
+    });
+    expect(deleteSourceResponse.statusCode).toBe(204);
+
+    // Verify chunks are gone after source deletion
+    const retrieveAfter = await ownerInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "source that will be deleted", minScore: 0 }
+    });
+    expect(retrieveAfter.statusCode).toBe(200);
+    expect(retrieveAfter.json().items).toHaveLength(0);
+  });
+
   it("enforces tenant isolation for ingestion and retrieval endpoints", async () => {
     const ownerInject = (options: InjectOptions) =>
       injectAs("user_owner_isolation", options);

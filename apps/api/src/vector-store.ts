@@ -174,6 +174,8 @@ export type RetrievalMatch = {
 export type VectorStore = {
   upsert(records: VectorRecord[]): Promise<void>;
   query(params: VectorQuery): Promise<RetrievalMatch[]>;
+  deleteBySourceId(sourceId: string): Promise<number>;
+  deleteByAgentId(agentId: string): Promise<number>;
 };
 
 const sanitizeRegion = (region: string) =>
@@ -219,6 +221,36 @@ export class LocalVectorStore implements VectorStore {
       this.records.set(record.id, record);
     }
     await this.persist();
+  }
+
+  async deleteBySourceId(sourceId: string): Promise<number> {
+    await this.load();
+    let count = 0;
+    for (const [id, record] of this.records) {
+      if (record.sourceId === sourceId) {
+        this.records.delete(id);
+        count += 1;
+      }
+    }
+    if (count > 0) {
+      await this.persist();
+    }
+    return count;
+  }
+
+  async deleteByAgentId(agentId: string): Promise<number> {
+    await this.load();
+    let count = 0;
+    for (const [id, record] of this.records) {
+      if (record.agentId === agentId) {
+        this.records.delete(id);
+        count += 1;
+      }
+    }
+    if (count > 0) {
+      await this.persist();
+    }
+    return count;
   }
 
   async query({
@@ -367,6 +399,8 @@ export class LocalVectorStore implements VectorStore {
 export type RegionalVectorStore = {
   upsert(region: string, records: VectorRecord[]): Promise<void>;
   query(region: string, params: VectorQuery): Promise<RetrievalMatch[]>;
+  deleteBySourceId(region: string, sourceId: string): Promise<number>;
+  deleteByAgentId(region: string, agentId: string): Promise<number>;
 };
 
 export const createRegionalVectorStore = (
@@ -396,6 +430,14 @@ export const createRegionalVectorStore = (
     async query(region, params) {
       const store = await getStore(region);
       return store.query(params);
+    },
+    async deleteBySourceId(region, sourceId) {
+      const store = await getStore(region);
+      return store.deleteBySourceId(sourceId);
+    },
+    async deleteByAgentId(region, agentId) {
+      const store = await getStore(region);
+      return store.deleteByAgentId(agentId);
     }
   };
 };

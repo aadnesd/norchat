@@ -70,7 +70,8 @@ const gdprDeletionSchema = z
   .object({
     userId: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
-    agentId: z.string().min(1).optional()
+    agentId: z.string().min(1).optional(),
+    deleteVectorData: z.boolean().optional()
   })
   .refine((data) => data.userId || data.conversationId, {
     message: "user_or_conversation_required",
@@ -2211,6 +2212,16 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       }
     }
     const removed = removeConversations(tenantId, toDelete);
+    let deletedChunks = 0;
+    if (payload.deleteVectorData && payload.agentId) {
+      const agent = agents.get(payload.agentId);
+      if (agent) {
+        const tenant = tenants.get(tenantId);
+        if (tenant) {
+          deletedChunks = await vectorStore.deleteByAgentId(tenant.region, payload.agentId);
+        }
+      }
+    }
     recordAuditEvent({
       tenantId,
       actorId: access.userId,
@@ -2220,12 +2231,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         conversationId: payload.conversationId,
         agentId: payload.agentId,
         deletedConversations: removed.removedConversations,
-        deletedMetrics: removed.removedMetrics
+        deletedMetrics: removed.removedMetrics,
+        deletedChunks
       }
     });
     return {
       deletedConversations: removed.removedConversations,
       deletedMetrics: removed.removedMetrics,
+      deletedChunks,
       requestedAt: new Date().toISOString()
     };
   });
@@ -3536,6 +3549,11 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const access = requireTenantRole(request, reply, agent.tenantId, "member");
     if (!access) {
       return reply;
+    }
+    const tenant = tenants.get(agent.tenantId);
+    let deletedChunks = 0;
+    if (tenant) {
+      deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
     }
     sources.delete(id);
     return reply.code(204).send();

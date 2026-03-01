@@ -96,4 +96,83 @@ describe("local vector store retrieval", () => {
     expect(results[0].chunk.content).toMatch(/refund policy window/i);
     expect(duration).toBeLessThan(300);
   });
+
+  it("deletes records by sourceId", async () => {
+    const createdAt = new Date().toISOString();
+    await store.upsert([
+      buildRecord({ id: "c1", agentId: "a1", sourceId: "s1", content: "source one chunk one", createdAt }),
+      buildRecord({ id: "c2", agentId: "a1", sourceId: "s1", content: "source one chunk two", createdAt }),
+      buildRecord({ id: "c3", agentId: "a1", sourceId: "s2", content: "source two chunk one", createdAt })
+    ]);
+
+    const deleted = await store.deleteBySourceId("s1");
+    expect(deleted).toBe(2);
+
+    const results = await store.query({
+      agentId: "a1",
+      queryText: "source one",
+      queryEmbedding: buildEmbedding("source one"),
+      minScore: 0,
+      maxResults: 10
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].chunk.sourceId).toBe("s2");
+  });
+
+  it("deletes records by agentId", async () => {
+    const createdAt = new Date().toISOString();
+    await store.upsert([
+      buildRecord({ id: "c1", agentId: "a1", sourceId: "s1", content: "agent one data", createdAt }),
+      buildRecord({ id: "c2", agentId: "a2", sourceId: "s2", content: "agent two data", createdAt }),
+      buildRecord({ id: "c3", agentId: "a1", sourceId: "s3", content: "agent one more data", createdAt })
+    ]);
+
+    const deleted = await store.deleteByAgentId("a1");
+    expect(deleted).toBe(2);
+
+    const resultsA1 = await store.query({
+      agentId: "a1",
+      queryText: "agent data",
+      queryEmbedding: buildEmbedding("agent data"),
+      minScore: 0,
+      maxResults: 10
+    });
+    expect(resultsA1).toHaveLength(0);
+
+    const resultsA2 = await store.query({
+      agentId: "a2",
+      queryText: "agent data",
+      queryEmbedding: buildEmbedding("agent data"),
+      minScore: 0,
+      maxResults: 10
+    });
+    expect(resultsA2).toHaveLength(1);
+  });
+
+  it("returns zero when deleting non-existent sourceId", async () => {
+    const deleted = await store.deleteBySourceId("nonexistent");
+    expect(deleted).toBe(0);
+  });
+
+  it("persists deletions across store reloads", async () => {
+    const createdAt = new Date().toISOString();
+    await store.upsert([
+      buildRecord({ id: "c1", agentId: "a1", sourceId: "s1", content: "persistent chunk", createdAt }),
+      buildRecord({ id: "c2", agentId: "a1", sourceId: "s2", content: "other persistent chunk", createdAt })
+    ]);
+
+    await store.deleteBySourceId("s1");
+
+    // Create a fresh store pointing to the same file
+    const reloadedStore = new LocalVectorStore(path.join(storeDir, "chunks.jsonl"));
+    const results = await reloadedStore.query({
+      agentId: "a1",
+      queryText: "persistent chunk",
+      queryEmbedding: buildEmbedding("persistent chunk"),
+      minScore: 0,
+      maxResults: 10
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].chunk.sourceId).toBe("s2");
+  });
 });

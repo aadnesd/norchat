@@ -1198,6 +1198,16 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     }
   >();
   const NOTION_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
+  // Cache ingested content per source so retrain can re-ingest automatically
+  const sourceContentCache = new Map<
+    string,
+    {
+      text: string;
+      metadata?: Record<string, unknown>;
+      chunkSize?: number;
+      chunkOverlap?: number;
+    }
+  >();
   const metricEvents: MetricEvent[] = [];
   const maxMetricEvents = 5000;
   const auditEvents: AuditEvent[] = [];
@@ -3320,6 +3330,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
     await vectorStore.upsert(tenant.region, vectorRecords);
 
+    // Cache ingested content for retrain
+    sourceContentCache.set(source.id, {
+      text: data.text,
+      metadata: data.metadata as Record<string, unknown> | undefined,
+      chunkSize,
+      chunkOverlap
+    });
+
     sources.set(source.id, {
       ...source,
       status: "ready",
@@ -3543,6 +3561,15 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
     await vectorStore.upsert(tenant.region, vectorRecords);
 
+    // Cache combined document content for retrain
+    const combinedText = data.documents.map((d) => d.content).join("\n\n");
+    sourceContentCache.set(source.id, {
+      text: combinedText,
+      metadata: data.metadata as Record<string, unknown> | undefined,
+      chunkSize,
+      chunkOverlap
+    });
+
     const updatedSource: Source = {
       ...source,
       status: "ready",
@@ -3625,13 +3652,84 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
     }
     const now = new Date().toISOString();
+
+    // Check if we have cached content for automatic re-ingestion
+    const cached = sourceContentCache.get(id);
+    if (cached && tenant) {
+      // Re-ingest from cached content
+      const chunkSize = cached.chunkSize ?? 120;
+      const chunkOverlap =
+        cached.chunkOverlap ?? Math.min(20, Math.max(chunkSize - 1, 0));
+      const textChunks = splitIntoChunks(cached.text, {
+        chunkSize,
+        chunkOverlap
+      });
+      const chunkCount = textChunks.length;
+      const vectorRecords: VectorRecord[] = [];
+      const sourceInfo = buildSourceLookup(new Set([source.id])).get(
+        source.id
+      );
+      textChunks.forEach((content, index) => {
+        const chunkId = `chunk_${crypto.randomUUID()}`;
+        const metadata: Record<string, unknown> = {
+          ...cached.metadata,
+          chunkIndex: index,
+          chunkCount,
+          sourceType: sourceInfo?.sourceType,
+          ...(sourceInfo?.sourceUrl
+            ? { sourceUrl: sourceInfo.sourceUrl }
+            : {}),
+          ...(sourceInfo?.sourceTitle
+            ? { sourceTitle: sourceInfo.sourceTitle }
+            : {})
+        };
+        vectorRecords.push({
+          id: chunkId,
+          agentId: source.agentId,
+          sourceId: source.id,
+          content,
+          metadata,
+          embedding: buildEmbedding(content),
+          createdAt: now
+        });
+      });
+      await vectorStore.upsert(tenant.region, vectorRecords);
+
+      const updated: Source = {
+        ...source,
+        status: "ready",
+        lastSyncedAt: now
+      };
+      sources.set(id, updated);
+
+      recordMetricEvent({
+        type: "ingestion_completed",
+        agentId: source.agentId,
+        conversationId: undefined,
+        timestamp: now,
+        metadata: {
+          sourceId: source.id,
+          kind: "retrain",
+          chunkCount,
+          deletedChunks
+        }
+      });
+
+      return {
+        source: updated,
+        deletedChunks,
+        reingestedChunks: chunkCount,
+        mode: "auto"
+      };
+    }
+
+    // No cached content — fall back to creating a queued ingestion job
     const updated: Source = {
       ...source,
       status: "processing",
       lastSyncedAt: now
     };
     sources.set(id, updated);
-    // Create a fresh ingestion job so new content can be ingested
     const kind: IngestionJob["kind"] =
       source.type === "notion" ? "notion" : source.type === "file" ? "file" : "crawl";
     const jobId = `job_${crypto.randomUUID()}`;
@@ -3643,7 +3741,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       createdAt: now
     };
     ingestionJobs.set(jobId, job);
-    return { source: updated, job, deletedChunks };
+    return { source: updated, job, deletedChunks, mode: "job" };
   });
 
   fastify.delete("/sources/:id", async (request, reply) => {
@@ -3667,6 +3765,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
     }
     sources.delete(id);
+    sourceContentCache.delete(id);
     return reply.code(204).send();
   });
 

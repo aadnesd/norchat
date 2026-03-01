@@ -157,6 +157,7 @@ describe("api routes", () => {
     const retrainBody = retrainResponse.json();
     expect(retrainBody.source.status).toBe("processing");
     expect(retrainBody.source.lastSyncedAt).toBeTypeOf("string");
+    expect(retrainBody.mode).toBe("job");
     expect(retrainBody.job).toBeDefined();
     expect(retrainBody.job.sourceId).toBe(source.id);
     expect(retrainBody.job.status).toBe("queued");
@@ -170,7 +171,7 @@ describe("api routes", () => {
     expect(deleteResponse.statusCode).toBe(204);
   });
 
-  it("retrain clears old chunks from vector store and creates new ingestion job", async () => {
+  it("retrain clears old chunks and auto-re-ingests from cached content", async () => {
     const tenantResponse = await adminInject({
       method: "POST",
       url: "/tenants",
@@ -210,7 +211,7 @@ describe("api routes", () => {
     const results = retrieveResponse.json();
     expect(results.items.length).toBeGreaterThan(0);
 
-    // Retrain — should clear old chunks
+    // Retrain — should clear old chunks AND re-ingest from cache
     const retrainResponse = await adminInject({
       method: "POST",
       url: `/sources/${source.id}/retrain`
@@ -218,10 +219,11 @@ describe("api routes", () => {
     expect(retrainResponse.statusCode).toBe(200);
     const retrainBody = retrainResponse.json();
     expect(retrainBody.deletedChunks).toBeGreaterThan(0);
-    expect(retrainBody.job.status).toBe("queued");
-    expect(retrainBody.job.sourceId).toBe(source.id);
+    expect(retrainBody.mode).toBe("auto");
+    expect(retrainBody.reingestedChunks).toBeGreaterThan(0);
+    expect(retrainBody.source.status).toBe("ready");
 
-    // Verify retrieval is now empty
+    // Verify retrieval still works after retrain (chunks were re-created)
     const retrieveAfter = await adminInject({
       method: "POST",
       url: "/retrieve",
@@ -229,7 +231,104 @@ describe("api routes", () => {
     });
     expect(retrieveAfter.statusCode).toBe(200);
     const afterResults = retrieveAfter.json();
-    expect(afterResults.items.length).toBe(0);
+    expect(afterResults.items.length).toBeGreaterThan(0);
+  });
+
+  it("retrain falls back to job mode when no cached content exists", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Retrain Job Corp", region: "no" }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Retrain Job Agent" }
+    });
+    const agent = agentResponse.json();
+
+    // Create source without ingesting any text (no cached content)
+    const sourceResponse = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: { agentId: agent.id, type: "website", value: "https://example.no" }
+    });
+    const source = sourceResponse.json();
+
+    // Retrain — no cached content, should create a job
+    const retrainResponse = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/retrain`
+    });
+    expect(retrainResponse.statusCode).toBe(200);
+    const retrainBody = retrainResponse.json();
+    expect(retrainBody.mode).toBe("job");
+    expect(retrainBody.job.status).toBe("queued");
+    expect(retrainBody.job.sourceId).toBe(source.id);
+    expect(retrainBody.source.status).toBe("processing");
+  });
+
+  it("retrain with auto mode preserves chat functionality end-to-end", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "E2E Retrain Corp", region: "no" }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "E2E Retrain Agent" }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: { agentId: agent.id, type: "text", value: "retrain-e2e-kb" }
+    });
+    const source = sourceResponse.json();
+
+    // Ingest text about Norwegian weather
+    await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: { text: "Bergen is known for its rainy weather and beautiful surrounding fjords" }
+    });
+
+    // Chat about Bergen weather — should get relevant response
+    const chatBefore = await adminInject({
+      method: "POST",
+      url: "/chat",
+      payload: { agentId: agent.id, message: "Tell me about Bergen weather" }
+    });
+    expect(chatBefore.statusCode).toBe(200);
+    const chatBeforeBody = chatBefore.json();
+    expect(chatBeforeBody.sources.length).toBeGreaterThan(0);
+    expect(chatBeforeBody.confidence).toBeGreaterThan(0);
+
+    // Retrain — auto-re-ingests from cache
+    const retrainResponse = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/retrain`
+    });
+    const retrainBody = retrainResponse.json();
+    expect(retrainBody.mode).toBe("auto");
+    expect(retrainBody.source.status).toBe("ready");
+
+    // Chat again — should still work after retrain
+    const chatAfter = await adminInject({
+      method: "POST",
+      url: "/chat",
+      payload: { agentId: agent.id, message: "Tell me about Bergen weather" }
+    });
+    expect(chatAfter.statusCode).toBe(200);
+    const chatAfterBody = chatAfter.json();
+    expect(chatAfterBody.sources.length).toBeGreaterThan(0);
+    expect(chatAfterBody.confidence).toBeGreaterThan(0);
   });
 
   it("queues crawl ingestion job", async () => {

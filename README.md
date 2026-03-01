@@ -18,6 +18,12 @@ Note: The API stores vector data under `data/vector-store` by default. Override 
 
 ## Validation
 
+Run full workspace tests:
+
+```bash
+npm test
+```
+
 Run API tests:
 
 ```bash

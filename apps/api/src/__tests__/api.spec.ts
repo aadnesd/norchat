@@ -1232,6 +1232,176 @@ describe("api routes", () => {
     );
   });
 
+  it("auto-creates a CRM ticket for low-confidence webhook chats and avoids duplicate dispatch", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Escalation Workspace",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Escalation Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const actionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "human_escalation",
+        config: {
+          provider: "zendesk",
+          defaultPriority: "high"
+        }
+      }
+    });
+    expect(actionResponse.statusCode).toBe(201);
+    const action = actionResponse.json();
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "slack",
+        config: {
+          authToken: "escalation_secret"
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const firstResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer escalation_secret"
+      },
+      payload: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          text: "Can you answer this?",
+          user: "U-ESC",
+          ts: "1700000100.0001"
+        }
+      }
+    });
+    expect(firstResponse.statusCode).toBe(200);
+    const firstBody = firstResponse.json();
+    expect(firstBody.reply.shouldEscalate).toBe(true);
+    expect(firstBody.reply.escalation.actionId).toBe(action.id);
+    expect(firstBody.reply.escalation.output.ticket.provider).toBe("zendesk");
+
+    const secondResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer escalation_secret"
+      },
+      payload: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          text: "Still need help",
+          user: "U-ESC",
+          thread_ts: "1700000100.0001",
+          ts: "1700000100.0002"
+        }
+      }
+    });
+    expect(secondResponse.statusCode).toBe(200);
+    const secondBody = secondResponse.json();
+    expect(secondBody.conversationId).toBe(firstBody.conversationId);
+    expect(secondBody.reply.shouldEscalate).toBe(true);
+    expect(secondBody.reply.escalation).toBeUndefined();
+
+    const metricsResponse = await adminInject({
+      method: "GET",
+      url: `/metrics/summary?agentId=${agent.id}`
+    });
+    expect(metricsResponse.statusCode).toBe(200);
+    const summary = metricsResponse.json();
+    expect(summary.totals.actions).toBe(1);
+    expect(summary.totals.escalated).toBe(1);
+  });
+
+  it("does not auto-escalate when confidence is high", async () => {
+    const { agent } = await seedAgentWithText(
+      "High Confidence Workspace",
+      "Returns are accepted within 30 days with proof of purchase."
+    );
+
+    const actionResponse = await adminInject({
+      method: "POST",
+      url: "/actions",
+      payload: {
+        agentId: agent.id,
+        type: "human_escalation",
+        config: {
+          provider: "zendesk",
+          defaultPriority: "high"
+        }
+      }
+    });
+    expect(actionResponse.statusCode).toBe(201);
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "slack",
+        config: {
+          authToken: "no_escalation_secret"
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const messageResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer no_escalation_secret"
+      },
+      payload: {
+        type: "event_callback",
+        event: {
+          type: "message",
+          text: "Returns are accepted within 30 days with proof of purchase?",
+          user: "U-HIGH",
+          ts: "1700000200.0001"
+        }
+      }
+    });
+    expect(messageResponse.statusCode).toBe(200);
+    const body = messageResponse.json();
+    expect(body.reply.shouldEscalate).toBe(false);
+    expect(body.reply.escalation).toBeUndefined();
+
+    const metricsResponse = await adminInject({
+      method: "GET",
+      url: `/metrics/summary?agentId=${agent.id}`
+    });
+    expect(metricsResponse.statusCode).toBe(200);
+    const summary = metricsResponse.json();
+    expect(summary.totals.actions).toBe(0);
+    expect(summary.totals.escalated).toBe(0);
+  });
+
   it("aggregates metrics events into summary and conversation review", async () => {
     const tenantResponse = await adminInject({
       method: "POST",

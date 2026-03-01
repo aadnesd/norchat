@@ -1208,6 +1208,143 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return { agent, tenant, response, prompt, context };
   };
 
+  const escalationActionPriority: Array<z.infer<typeof actionTypeSchema>> = [
+    "human_escalation",
+    "ticket_create",
+    "salesforce_ticket"
+  ];
+
+  const getEscalationActionForAgent = (agentId: string) => {
+    for (const type of escalationActionPriority) {
+      const action = Array.from(actions.values()).find(
+        (item) => item.agentId === agentId && item.enabled && item.type === type
+      );
+      if (action) {
+        return action;
+      }
+    }
+    return undefined;
+  };
+
+  const maybeDispatchAutoEscalation = (input: {
+    agentId: string;
+    message: string;
+    response: ReturnType<typeof buildChatResponse>;
+    channel?: Channel;
+    conversation?: Conversation;
+  }) => {
+    if (!input.response.shouldEscalate) {
+      return undefined;
+    }
+    if (input.conversation?.status === "escalated") {
+      return undefined;
+    }
+    const action = getEscalationActionForAgent(input.agentId);
+    if (!action) {
+      return undefined;
+    }
+
+    const requester = input.conversation?.userId
+      ? {
+          name: input.conversation.userId,
+          ...(input.conversation.userId.includes("@")
+            ? { email: input.conversation.userId }
+            : {})
+        }
+      : undefined;
+
+    const payload: Record<string, unknown> = {
+      subject: `Low-confidence escalation for agent ${input.agentId}`,
+      description: [
+        `User message: ${input.message}`,
+        `Assistant response: ${input.response.message}`,
+        `Confidence: ${input.response.confidence.toFixed(2)}`,
+        input.channel ? `Channel: ${input.channel.type}` : undefined,
+        input.conversation
+          ? `Conversation ID: ${input.conversation.id}`
+          : undefined
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      priority: "high",
+      requester,
+      tags: ["auto-escalation", "low-confidence"],
+      conversationId: input.conversation?.id,
+      metadata: {
+        reason: "low_confidence",
+        confidence: input.response.confidence
+      }
+    };
+
+    try {
+      const { input: actionInput, output } = executeAction(action, payload);
+      const createdAt = new Date().toISOString();
+      const execution: ActionExecution = {
+        id: `execution_${crypto.randomUUID()}`,
+        actionId: action.id,
+        type: action.type,
+        status: "success",
+        input: actionInput,
+        output,
+        createdAt
+      };
+      actionExecutions.set(execution.id, execution);
+      recordMetricEvent({
+        type: "action_executed",
+        agentId: action.agentId,
+        channelId: input.channel?.id,
+        conversationId: input.conversation?.id,
+        timestamp: createdAt,
+        metadata: {
+          actionType: action.type,
+          status: execution.status,
+          reason: "low_confidence"
+        }
+      });
+      if (input.conversation) {
+        const updatedConversation: Conversation = {
+          ...input.conversation,
+          status: "escalated",
+          endedAt: input.conversation.endedAt ?? createdAt
+        };
+        conversations.set(input.conversation.id, updatedConversation);
+        recordMetricEvent({
+          type: "conversation_escalated",
+          agentId: input.agentId,
+          channelId: input.channel?.id ?? input.conversation.channelId,
+          conversationId: input.conversation.id,
+          timestamp: createdAt,
+          metadata: {
+            reason: "low_confidence",
+            confidence: input.response.confidence,
+            actionType: action.type,
+            actionId: action.id
+          }
+        });
+      }
+      return {
+        actionId: action.id,
+        executionId: execution.id,
+        type: action.type,
+        status: execution.status,
+        output
+      };
+    } catch (error) {
+      if (error instanceof ActionExecutionError) {
+        fastify.log.warn(
+          {
+            actionId: action.id,
+            agentId: input.agentId,
+            error: error.message
+          },
+          "automatic escalation failed"
+        );
+        return undefined;
+      }
+      throw error;
+    }
+  };
+
   const getOrCreateConversation = (input: {
     channel: Channel;
     userId?: string;
@@ -2241,10 +2378,17 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
           sourceCount: response.sources.length
         }
       });
+      const escalation = maybeDispatchAutoEscalation({
+        agentId: channel.agentId,
+        message: parsed.message.message,
+        response,
+        channel,
+        conversation
+      });
       return reply.send({
         channelId: channel.id,
         conversationId: conversation.id,
-        reply: response,
+        reply: escalation ? { ...response, escalation } : response,
         prompt,
         metadata: parsed.message.metadata
       });
@@ -3046,10 +3190,28 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       return reply.code(400).send({ error: "agent_or_channel_required" });
     }
 
+    let conversation: Conversation | undefined;
+    if (channel) {
+      const threadKeyHeader =
+        typeof request.headers["x-thread-key"] === "string"
+          ? request.headers["x-thread-key"]
+          : undefined;
+      const endUserIdHeader =
+        typeof request.headers["x-end-user-id"] === "string"
+          ? request.headers["x-end-user-id"]
+          : undefined;
+      conversation = getOrCreateConversation({
+        channel,
+        userId: endUserIdHeader,
+        threadKey: threadKeyHeader
+      });
+    }
+
     recordMetricEvent({
       type: "message_sent",
       agentId,
       channelId: channel?.id,
+      conversationId: conversation?.id,
       timestamp: new Date().toISOString(),
       metadata: {
         role: "user",
@@ -3070,11 +3232,19 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         type: "message_sent",
         agentId,
         channelId: channel?.id,
+        conversationId: conversation?.id,
         timestamp: new Date().toISOString(),
         metadata: {
           role: "assistant",
           sourceCount: response.sources.length
         }
+      });
+      const escalation = maybeDispatchAutoEscalation({
+        agentId,
+        message: data.message,
+        response,
+        channel,
+        conversation
       });
 
       if (data.stream) {
@@ -3087,14 +3257,26 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         for (const chunk of chunksToSend) {
           reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
         }
+        const streamedResponse = escalation
+          ? { ...response, escalation }
+          : response;
         reply.raw.write(
-          `data: ${JSON.stringify({ done: true, response })}\n\n`
+          `data: ${JSON.stringify({
+            done: true,
+            response: streamedResponse,
+            conversationId: conversation?.id
+          })}\n\n`
         );
         reply.raw.end();
         return reply;
       }
 
-      return reply.send({ ...response, prompt });
+      return reply.send({
+        ...response,
+        ...(escalation ? { escalation } : {}),
+        prompt,
+        conversationId: conversation?.id
+      });
     } catch (error) {
       if (error instanceof RequestError) {
         return reply.code(error.statusCode).send({ error: error.message });

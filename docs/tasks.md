@@ -69,6 +69,11 @@ Why: Strict tenant-bound authorization/scoping is required to prevent cross-tena
 Tests: API integration coverage verifies cross-tenant ingestion create/status and retrieval requests are rejected, while same-tenant requests succeed.
 Implementation outcome: Ingestion and retrieval endpoints now consistently enforce tenant isolation, closing the previously tracked gap.
 
+17. Gap: low-confidence escalation now auto-creates CRM ticket from chat runtime. (Highest priority)
+Why: Spec acceptance requires low-confidence responses to trigger an immediate CRM handoff so unresolved chats are not dropped.
+Tests: Runtime confidence-threshold escalation tests validate single ticket dispatch with conversation context; API/integration coverage verifies CRM ticket creation on low-confidence flows and no ticket creation on high-confidence flows.
+Implementation outcome: Chat runtime now automatically escalates low-confidence responses by creating one CRM ticket per qualifying conversation with idempotent dispatch safeguards.
+
 ## Planned Tasks
 
-No planned tasks remain as of 2026-02-28.
+No planned tasks remain as of 2026-03-01.

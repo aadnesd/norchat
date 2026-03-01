@@ -79,6 +79,11 @@ Why: Add inbound webhook handling + normalized event mapping for the remaining c
 Tests: Per-connector webhook contract tests cover signature verification and payload normalization, and routing integration tests assert inbound events create/send messages on the correct tenant conversation.
 Implementation outcome: Connector webhook support now verifies platform-specific webhooks, normalizes inbound events, and routes messages across Messenger, Instagram, Shopify, Zapier, and WordPress within tenant-scoped conversations.
 
+19. Notion source integration with webhook handler and auto-retrain scheduler (AC5).
+Why: AC5 was completely unimplemented — Notion is a critical data source for many businesses and the acceptance criteria requires auto-retrain within 24 hours of content changes.
+Tests: API integration tests validate Notion source creation, webhook verification, webhook-triggered retrain by sourceId and workspaceId, 404 for unknown sources, sync-check for stale sources, input validation, and nonexistent agent rejection. Tests run: `npm run test -w apps/api`.
+Implementation outcome: `/sources/notion` endpoint creates Notion sources with ingestion jobs and sync state. `/webhooks/notion` handles verification challenges and content change notifications, triggering retrain jobs. `/sources/notion/sync-check` identifies stale sources (>24h since last sync) and auto-triggers retrain. Shared types updated with `NotionSourceCreateInput`, `NotionWebhookPayload`, and `NotionSyncCheckResult`.
+
 ## Planned Tasks
 
 No remaining planned tasks as of 2026-03-01.

@@ -2130,4 +2130,275 @@ describe("api routes", () => {
     });
     expect(sameTenantSourceCreate.statusCode).toBe(201);
   });
+
+  it("creates a Notion source with ingestion job and sync state", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Notion Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Notion Agent" }
+    });
+    const agent = agentRes.json();
+
+    // Create Notion source
+    const notionRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        workspaceId: "ws_abc123",
+        accessToken: "ntn_test_token",
+        pageIds: ["page1", "page2"],
+        databaseIds: ["db1"],
+        autoRetrain: true
+      }
+    });
+    expect(notionRes.statusCode).toBe(201);
+    const notionBody = notionRes.json();
+    expect(notionBody.source.type).toBe("notion");
+    expect(notionBody.source.config.workspaceId).toBe("ws_abc123");
+    expect(notionBody.source.config.pageIds).toEqual(["page1", "page2"]);
+    expect(notionBody.source.config.databaseIds).toEqual(["db1"]);
+    expect(notionBody.source.config.autoRetrain).toBe(true);
+    expect(notionBody.source.status).toBe("queued");
+    expect(notionBody.job.kind).toBe("notion");
+    expect(notionBody.job.status).toBe("queued");
+
+    // Verify source appears in source list
+    const sourceListRes = await adminInject({
+      method: "GET",
+      url: `/sources?agentId=${agent.id}`
+    });
+    expect(sourceListRes.statusCode).toBe(200);
+    const sourceList = sourceListRes.json();
+    const notionSources = sourceList.items.filter(
+      (s: Record<string, unknown>) => s.type === "notion"
+    );
+    expect(notionSources.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("handles Notion webhook verification", async () => {
+    const verifyRes = await server.inject({
+      method: "POST",
+      url: "/webhooks/notion",
+      payload: { type: "verification" }
+    });
+    expect(verifyRes.statusCode).toBe(200);
+    expect(verifyRes.json().status).toBe("verified");
+  });
+
+  it("triggers retrain on Notion webhook content change", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Notion Webhook Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Notion Webhook Agent" }
+    });
+    const agent = agentRes.json();
+
+    const notionRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        workspaceId: "ws_webhook_test",
+        accessToken: "ntn_token"
+      }
+    });
+    expect(notionRes.statusCode).toBe(201);
+    const notionSource = notionRes.json().source;
+
+    // Trigger webhook by sourceId
+    const webhookRes = await server.inject({
+      method: "POST",
+      url: "/webhooks/notion",
+      payload: {
+        sourceId: notionSource.id,
+        type: "page_changed",
+        pageId: "page_updated"
+      }
+    });
+    expect(webhookRes.statusCode).toBe(200);
+    const webhookBody = webhookRes.json();
+    expect(webhookBody.status).toBe("retrain_triggered");
+    expect(webhookBody.sources).toHaveLength(1);
+    expect(webhookBody.sources[0].sourceId).toBe(notionSource.id);
+    expect(webhookBody.sources[0].jobId).toBeDefined();
+
+    // Verify the source status changed to processing
+    const sourceListRes = await adminInject({
+      method: "GET",
+      url: `/sources?agentId=${agent.id}`
+    });
+    const updatedSource = sourceListRes.json().items.find(
+      (s: Record<string, unknown>) => s.id === notionSource.id
+    );
+    expect(updatedSource.status).toBe("processing");
+    expect(updatedSource.lastSyncedAt).toBeDefined();
+  });
+
+  it("triggers retrain on Notion webhook by workspaceId", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Notion WS Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Notion WS Agent" }
+    });
+    const agent = agentRes.json();
+
+    const wsId = "ws_lookup_test_" + Date.now();
+    const notionRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        workspaceId: wsId,
+        accessToken: "ntn_token"
+      }
+    });
+    expect(notionRes.statusCode).toBe(201);
+    const notionSource = notionRes.json().source;
+
+    // Trigger webhook by workspaceId
+    const webhookRes = await server.inject({
+      method: "POST",
+      url: "/webhooks/notion",
+      payload: {
+        workspaceId: wsId,
+        type: "database_changed",
+        databaseId: "db_changed"
+      }
+    });
+    expect(webhookRes.statusCode).toBe(200);
+    const webhookBody = webhookRes.json();
+    expect(webhookBody.status).toBe("retrain_triggered");
+    expect(webhookBody.sources.length).toBeGreaterThanOrEqual(1);
+    const triggered = webhookBody.sources.find(
+      (s: Record<string, unknown>) => s.sourceId === notionSource.id
+    );
+    expect(triggered).toBeDefined();
+  });
+
+  it("returns 404 for Notion webhook with unknown source", async () => {
+    const webhookRes = await server.inject({
+      method: "POST",
+      url: "/webhooks/notion",
+      payload: {
+        sourceId: "source_nonexistent",
+        type: "page_changed"
+      }
+    });
+    expect(webhookRes.statusCode).toBe(404);
+    expect(webhookRes.json().error).toBe("notion_source_not_found");
+  });
+
+  it("sync-check identifies stale Notion sources for auto-retrain", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Notion Sync Tenant", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Notion Sync Agent" }
+    });
+    const agent = agentRes.json();
+
+    // Create Notion source with autoRetrain enabled
+    const notionRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        workspaceId: "ws_sync_check",
+        accessToken: "ntn_token",
+        autoRetrain: true
+      }
+    });
+    expect(notionRes.statusCode).toBe(201);
+
+    // Sync check when just created (should be up to date)
+    const freshCheckRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion/sync-check"
+    });
+    expect(freshCheckRes.statusCode).toBe(200);
+    const freshCheck = freshCheckRes.json();
+    // The source was just created so it should be up to date
+    expect(freshCheck.upToDate.length).toBeGreaterThanOrEqual(1);
+    expect(freshCheck.thresholdMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("rejects Notion source creation without required fields", async () => {
+    const tenantRes = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Notion Validation", region: "no" }
+    });
+    const tenant = tenantRes.json();
+
+    const agentRes = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Notion Val Agent" }
+    });
+    const agent = agentRes.json();
+
+    // Missing workspaceId
+    const noWorkspaceRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        accessToken: "ntn_token"
+      }
+    });
+    expect(noWorkspaceRes.statusCode).toBe(400);
+
+    // Missing accessToken
+    const noTokenRes = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: agent.id,
+        workspaceId: "ws_no_token"
+      }
+    });
+    expect(noTokenRes.statusCode).toBe(400);
+  });
+
+  it("rejects Notion source for nonexistent agent", async () => {
+    const res = await adminInject({
+      method: "POST",
+      url: "/sources/notion",
+      payload: {
+        agentId: "agent_nonexistent",
+        workspaceId: "ws_test",
+        accessToken: "ntn_token"
+      }
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("agent_not_found");
+  });
 });

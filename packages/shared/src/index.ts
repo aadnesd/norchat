@@ -82,6 +82,7 @@ export type SourceNotionConfig = {
   workspaceId?: string;
   pageIds?: string[];
   databaseIds?: string[];
+  autoRetrain?: boolean;
 };
 
 export type SourceTicketingConfig = {
@@ -165,7 +166,7 @@ export type IngestionJobStatus = "queued" | "processing" | "complete" | "failed"
 export type IngestionJob = {
   id: string;
   sourceId: string;
-  kind: "crawl" | "file" | "text" | "qa";
+  kind: "crawl" | "file" | "text" | "qa" | "notion";
   status: IngestionJobStatus;
   createdAt: string;
   completedAt?: string;
@@ -318,3 +319,32 @@ export type ApiListResponse<T> = {
 };
 
 export type ApiResponse<T> = T | ApiError;
+
+export type NotionSourceCreateInput = {
+  agentId: string;
+  workspaceId: string;
+  accessToken: string;
+  pageIds?: string[];
+  databaseIds?: string[];
+  autoRetrain?: boolean;
+};
+
+export type NotionWebhookPayload = {
+  sourceId?: string;
+  workspaceId?: string;
+  type?: "page_changed" | "database_changed" | "content_updated" | "verification";
+  pageId?: string;
+  databaseId?: string;
+  timestamp?: string;
+};
+
+export type NotionSyncCheckResult = {
+  stale: Array<{
+    sourceId: string;
+    jobId: string;
+    lastSyncedAt: string;
+    staleSinceMs: number;
+  }>;
+  upToDate: string[];
+  thresholdMs: number;
+};

@@ -333,6 +333,15 @@ const billingPayloadSchema = z.object({
   description: z.string().min(1).optional()
 });
 
+const notionSourceSchema = z.object({
+  agentId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  accessToken: z.string().min(1),
+  pageIds: z.array(z.string().min(1)).optional(),
+  databaseIds: z.array(z.string().min(1)).optional(),
+  autoRetrain: z.boolean().optional()
+});
+
 const crawlConfigSchema = z.object({
   agentId: z.string().min(1),
   startUrls: z.array(z.string().url()).min(1),
@@ -400,7 +409,7 @@ const ingestionJobStatusSchema = z.enum([
 type IngestionJob = {
   id: string;
   sourceId: string;
-  kind: "crawl" | "file";
+  kind: "crawl" | "file" | "notion";
   status: z.infer<typeof ingestionJobStatusSchema>;
   createdAt: string;
 };
@@ -1153,6 +1162,17 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
   const conversations = new Map<string, Conversation>();
   const ingestionJobs = new Map<string, IngestionJob>();
   const channelThreads = new Map<string, string>();
+  const notionSyncState = new Map<
+    string,
+    {
+      sourceId: string;
+      workspaceId: string;
+      lastSyncedAt: string;
+      autoRetrain: boolean;
+      staleSinceMs: number;
+    }
+  >();
+  const NOTION_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
   const metricEvents: MetricEvent[] = [];
   const maxMetricEvents = 5000;
   const auditEvents: AuditEvent[] = [];
@@ -2944,6 +2964,204 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     sources.set(sourceId, source);
     ingestionJobs.set(jobId, job);
     return reply.code(201).send({ source, job });
+  });
+
+  // --- Notion source creation ---
+  fastify.post("/sources/notion", async (request, reply) => {
+    const parsed = notionSourceSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "validation_error", details: parsed.error.flatten() });
+    }
+    const data = parsed.data;
+    const agent = agents.get(data.agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, agent.tenantId, "member");
+    if (!access) {
+      return reply;
+    }
+    const sourceId = `source_${crypto.randomUUID()}`;
+    const source: Source = {
+      id: sourceId,
+      agentId: data.agentId,
+      type: "notion",
+      config: {
+        workspaceId: data.workspaceId,
+        pageIds: data.pageIds,
+        databaseIds: data.databaseIds,
+        autoRetrain: data.autoRetrain ?? true
+      },
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    const jobId = `job_${crypto.randomUUID()}`;
+    const job: IngestionJob = {
+      id: jobId,
+      sourceId,
+      kind: "notion",
+      status: "queued",
+      createdAt: new Date().toISOString()
+    };
+    sources.set(sourceId, source);
+    ingestionJobs.set(jobId, job);
+    const autoRetrain = data.autoRetrain ?? true;
+    notionSyncState.set(sourceId, {
+      sourceId,
+      workspaceId: data.workspaceId,
+      lastSyncedAt: new Date().toISOString(),
+      autoRetrain,
+      staleSinceMs: 0
+    });
+    return reply.code(201).send({ source, job });
+  });
+
+  // --- Notion webhook for change notifications ---
+  fastify.post("/webhooks/notion", async (request, reply) => {
+    const bodySchema = z.object({
+      sourceId: z.string().min(1).optional(),
+      workspaceId: z.string().min(1).optional(),
+      type: z
+        .enum(["page_changed", "database_changed", "content_updated", "verification"])
+        .optional(),
+      pageId: z.string().min(1).optional(),
+      databaseId: z.string().min(1).optional(),
+      timestamp: z.string().datetime().optional()
+    });
+    const data = bodySchema.parse(request.body);
+
+    // Handle verification challenge
+    if (data.type === "verification") {
+      return reply.send({ status: "verified" });
+    }
+
+    // Find matching Notion sources
+    const matchingSources: Source[] = [];
+    if (data.sourceId) {
+      const source = sources.get(data.sourceId);
+      if (source && source.type === "notion") {
+        matchingSources.push(source);
+      }
+    } else if (data.workspaceId) {
+      for (const source of sources.values()) {
+        if (
+          source.type === "notion" &&
+          isRecord(source.config) &&
+          source.config.workspaceId === data.workspaceId
+        ) {
+          matchingSources.push(source);
+        }
+      }
+    }
+
+    if (matchingSources.length === 0) {
+      return reply.code(404).send({ error: "notion_source_not_found" });
+    }
+
+    // Trigger retrain for each matching source
+    const retriggered: Array<{ sourceId: string; jobId: string }> = [];
+    for (const source of matchingSources) {
+      const now = new Date().toISOString();
+      sources.set(source.id, {
+        ...source,
+        status: "processing",
+        lastSyncedAt: now
+      });
+      const jobId = `job_${crypto.randomUUID()}`;
+      const job: IngestionJob = {
+        id: jobId,
+        sourceId: source.id,
+        kind: "notion",
+        status: "queued",
+        createdAt: now
+      };
+      ingestionJobs.set(jobId, job);
+
+      // Update sync state
+      const syncState = notionSyncState.get(source.id);
+      if (syncState) {
+        notionSyncState.set(source.id, {
+          ...syncState,
+          lastSyncedAt: now,
+          staleSinceMs: 0
+        });
+      }
+
+      retriggered.push({ sourceId: source.id, jobId });
+    }
+
+    return reply.send({
+      status: "retrain_triggered",
+      sources: retriggered
+    });
+  });
+
+  // --- Notion auto-retrain sync check ---
+  // This endpoint is designed to be called periodically (e.g., by a cron job / scheduler)
+  // to identify Notion sources that haven't been synced within 24 hours and trigger retrain.
+  fastify.post("/sources/notion/sync-check", async (request, reply) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return reply;
+    }
+    const allowedTenantIds = getTenantIdsForUser(userId);
+    const now = Date.now();
+    const stale: Array<{ sourceId: string; jobId: string; lastSyncedAt: string; staleSinceMs: number }> = [];
+    const upToDate: string[] = [];
+
+    for (const [sourceId, syncState] of notionSyncState.entries()) {
+      if (!syncState.autoRetrain) {
+        continue;
+      }
+      const source = sources.get(sourceId);
+      if (!source) {
+        continue;
+      }
+      const tenantId = getTenantIdForAgent(source.agentId);
+      if (!tenantId || !allowedTenantIds.has(tenantId)) {
+        continue;
+      }
+      const lastSyncMs = new Date(syncState.lastSyncedAt).getTime();
+      const elapsedMs = now - lastSyncMs;
+
+      if (elapsedMs >= NOTION_STALE_THRESHOLD_MS) {
+        // Source is stale — trigger retrain
+        const retrainAt = new Date().toISOString();
+        sources.set(sourceId, {
+          ...source,
+          status: "processing",
+          lastSyncedAt: retrainAt
+        });
+        const jobId = `job_${crypto.randomUUID()}`;
+        const job: IngestionJob = {
+          id: jobId,
+          sourceId,
+          kind: "notion",
+          status: "queued",
+          createdAt: retrainAt
+        };
+        ingestionJobs.set(jobId, job);
+        notionSyncState.set(sourceId, {
+          ...syncState,
+          lastSyncedAt: retrainAt,
+          staleSinceMs: elapsedMs
+        });
+        stale.push({
+          sourceId,
+          jobId,
+          lastSyncedAt: syncState.lastSyncedAt,
+          staleSinceMs: elapsedMs
+        });
+      } else {
+        upToDate.push(sourceId);
+      }
+    }
+
+    return reply.send({
+      stale,
+      upToDate,
+      thresholdMs: NOTION_STALE_THRESHOLD_MS
+    });
   });
 
   fastify.post("/sources/:id/ingest-text", async (request, reply) => {

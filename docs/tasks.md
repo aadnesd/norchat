@@ -74,6 +74,11 @@ Why: Spec acceptance requires low-confidence responses to trigger an immediate C
 Tests: Runtime confidence-threshold escalation tests validate single ticket dispatch with conversation context; API/integration coverage verifies CRM ticket creation on low-confidence flows and no ticket creation on high-confidence flows.
 Implementation outcome: Chat runtime now automatically escalates low-confidence responses by creating one CRM ticket per qualifying conversation with idempotent dispatch safeguards.
 
+18. Gap: extend connector webhook support (Messenger, Instagram, Shopify, Zapier, WordPress). (Highest priority)
+Why: Add inbound webhook handling + normalized event mapping for the remaining channels so message ingestion/routing works consistently across all listed connectors.
+Tests: Per-connector webhook contract tests cover signature verification and payload normalization, and routing integration tests assert inbound events create/send messages on the correct tenant conversation.
+Implementation outcome: Connector webhook support now verifies platform-specific webhooks, normalizes inbound events, and routes messages across Messenger, Instagram, Shopify, Zapier, and WordPress within tenant-scoped conversations.
+
 ## Planned Tasks
 
-No planned tasks remain as of 2026-03-01.
+No remaining planned tasks as of 2026-03-01.

@@ -1232,6 +1232,210 @@ describe("api routes", () => {
     );
   });
 
+  it("handles Messenger, Instagram, Shopify, Zapier, and WordPress webhooks", async () => {
+    const { agent } = await seedAgentWithText(
+      "Extended Connectors",
+      "Support is available 24/7 via chat."
+    );
+
+    const messengerResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "messenger",
+        config: {
+          authToken: "messenger_secret",
+          verifyToken: "messenger_verify"
+        }
+      }
+    });
+    const messengerChannel = messengerResponse.json();
+
+    const messengerVerifyResponse = await adminInject({
+      method: "GET",
+      url: `/channels/${messengerChannel.id}/webhook?hub.mode=subscribe&hub.verify_token=messenger_verify&hub.challenge=ok123`
+    });
+    expect(messengerVerifyResponse.statusCode).toBe(200);
+    expect(messengerVerifyResponse.body).toBe("ok123");
+
+    const messengerWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${messengerChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer messenger_secret"
+      },
+      payload: {
+        object: "page",
+        entry: [
+          {
+            messaging: [
+              {
+                sender: {
+                  id: "m_user_1"
+                },
+                message: {
+                  mid: "m_mid_1",
+                  text: "When is support available?"
+                },
+                timestamp: 1700000300000
+              }
+            ]
+          }
+        ]
+      }
+    });
+    expect(messengerWebhookResponse.statusCode).toBe(200);
+    expect(messengerWebhookResponse.json().reply.message).toContain(
+      "Support is available 24/7 via chat."
+    );
+
+    const instagramResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "instagram",
+        config: {
+          authToken: "instagram_secret",
+          verifyToken: "instagram_verify"
+        }
+      }
+    });
+    const instagramChannel = instagramResponse.json();
+
+    const instagramVerifyResponse = await adminInject({
+      method: "GET",
+      url: `/channels/${instagramChannel.id}/webhook?hub.mode=subscribe&hub.verify_token=instagram_verify&hub.challenge=ig123`
+    });
+    expect(instagramVerifyResponse.statusCode).toBe(200);
+    expect(instagramVerifyResponse.body).toBe("ig123");
+
+    const instagramWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${instagramChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer instagram_secret"
+      },
+      payload: {
+        object: "instagram",
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    {
+                      from: "ig_user_1",
+                      id: "ig_mid_1",
+                      text: "Need support hours."
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+    expect(instagramWebhookResponse.statusCode).toBe(200);
+    expect(instagramWebhookResponse.json().reply.message).toContain(
+      "Support is available 24/7 via chat."
+    );
+
+    const shopifyResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "shopify",
+        config: {
+          authToken: "shopify_secret"
+        }
+      }
+    });
+    const shopifyChannel = shopifyResponse.json();
+
+    const shopifyWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${shopifyChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer shopify_secret"
+      },
+      payload: {
+        id: 12345,
+        note: "Do you have support around the clock?",
+        customer: {
+          email: "shopper@example.no"
+        }
+      }
+    });
+    expect(shopifyWebhookResponse.statusCode).toBe(200);
+    expect(shopifyWebhookResponse.json().reply.message).toContain(
+      "Support is available 24/7 via chat."
+    );
+
+    const zapierResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "zapier",
+        config: {
+          authToken: "zapier_secret"
+        }
+      }
+    });
+    const zapierChannel = zapierResponse.json();
+
+    const zapierWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${zapierChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer zapier_secret"
+      },
+      payload: {
+        message: "Can I contact support at any hour?",
+        userId: "zap_user_1",
+        threadKey: "zap_thread_1"
+      }
+    });
+    expect(zapierWebhookResponse.statusCode).toBe(200);
+    expect(zapierWebhookResponse.json().reply.message).toContain(
+      "Support is available 24/7 via chat."
+    );
+
+    const wordpressResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "wordpress",
+        config: {
+          authToken: "wordpress_secret"
+        }
+      }
+    });
+    const wordpressChannel = wordpressResponse.json();
+
+    const wordpressWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${wordpressChannel.id}/webhook`,
+      headers: {
+        authorization: "Bearer wordpress_secret"
+      },
+      payload: {
+        id: 987,
+        content: "Please confirm if support is 24/7.",
+        author_email: "wpuser@example.no"
+      }
+    });
+    expect(wordpressWebhookResponse.statusCode).toBe(200);
+    expect(wordpressWebhookResponse.json().reply.message).toContain(
+      "Support is available 24/7 via chat."
+    );
+  });
+
   it("auto-creates a CRM ticket for low-confidence webhook chats and avoids duplicate dispatch", async () => {
     const tenantResponse = await adminInject({
       method: "POST",

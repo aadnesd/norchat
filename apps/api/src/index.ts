@@ -136,8 +136,13 @@ const connectorChannelTypes = new Set([
   "slack",
   "whatsapp",
   "email",
+  "messenger",
+  "instagram",
   "zendesk",
-  "salesforce"
+  "salesforce",
+  "shopify",
+  "zapier",
+  "wordpress"
 ]);
 
 const channelSchema = z
@@ -674,6 +679,237 @@ const parseSalesforceWebhook = (payload: Record<string, unknown>): WebhookParseR
   };
 };
 
+const parseMessengerWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const entries = getArray(payload.entry);
+  if (!entries) {
+    return { kind: "error", error: "messenger_entry_missing" };
+  }
+  for (const entry of entries) {
+    const entryRecord = getRecord(entry);
+    if (!entryRecord) {
+      continue;
+    }
+    const events = getArray(entryRecord.messaging);
+    if (!events) {
+      continue;
+    }
+    for (const event of events) {
+      const eventRecord = getRecord(event);
+      if (!eventRecord) {
+        continue;
+      }
+      const messageRecord = getRecord(eventRecord.message);
+      const text = pickFirstString(messageRecord?.text, eventRecord.text);
+      if (!text) {
+        continue;
+      }
+      const senderRecord = getRecord(eventRecord.sender);
+      const userId = pickFirstString(senderRecord?.id, senderRecord?.user_ref);
+      const threadKey = pickFirstString(
+        messageRecord?.mid,
+        eventRecord.message_id,
+        userId
+      );
+      return {
+        kind: "message",
+        message: {
+          message: text,
+          userId,
+          threadKey,
+          metadata: {
+            messengerMessageId: messageRecord?.mid
+          }
+        }
+      };
+    }
+  }
+  return { kind: "error", error: "messenger_message_missing" };
+};
+
+const parseInstagramWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const entries = getArray(payload.entry);
+  if (!entries) {
+    return { kind: "error", error: "instagram_entry_missing" };
+  }
+  for (const entry of entries) {
+    const entryRecord = getRecord(entry);
+    if (!entryRecord) {
+      continue;
+    }
+    const messagingEvents = getArray(entryRecord.messaging);
+    if (messagingEvents) {
+      for (const event of messagingEvents) {
+        const eventRecord = getRecord(event);
+        if (!eventRecord) {
+          continue;
+        }
+        const messageRecord = getRecord(eventRecord.message);
+        const text = pickFirstString(messageRecord?.text, eventRecord.text);
+        if (!text) {
+          continue;
+        }
+        const senderRecord = getRecord(eventRecord.sender);
+        const userId = pickFirstString(senderRecord?.id, senderRecord?.username);
+        const threadKey = pickFirstString(
+          messageRecord?.mid,
+          eventRecord.message_id,
+          userId
+        );
+        return {
+          kind: "message",
+          message: {
+            message: text,
+            userId,
+            threadKey,
+            metadata: {
+              instagramMessageId: messageRecord?.mid
+            }
+          }
+        };
+      }
+    }
+    const changes = getArray(entryRecord.changes);
+    if (!changes) {
+      continue;
+    }
+    for (const change of changes) {
+      const changeRecord = getRecord(change);
+      const value = changeRecord ? getRecord(changeRecord.value) : undefined;
+      const messages = value ? getArray(value.messages) : undefined;
+      if (!messages) {
+        continue;
+      }
+      for (const message of messages) {
+        const messageRecord = getRecord(message);
+        if (!messageRecord) {
+          continue;
+        }
+        const text = pickFirstString(messageRecord.text);
+        if (!text) {
+          continue;
+        }
+        const userId = pickFirstString(messageRecord.from, messageRecord.username);
+        const threadKey = pickFirstString(messageRecord.id, userId);
+        return {
+          kind: "message",
+          message: {
+            message: text,
+            userId,
+            threadKey,
+            metadata: {
+              instagramMessageId: messageRecord.id
+            }
+          }
+        };
+      }
+    }
+  }
+  return { kind: "error", error: "instagram_message_missing" };
+};
+
+const parseShopifyWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const customer = getRecord(payload.customer);
+  const text = pickFirstString(
+    payload.message,
+    payload.note,
+    payload.content,
+    payload.body,
+    payload.question
+  );
+  if (!text) {
+    return { kind: "error", error: "shopify_message_missing" };
+  }
+  const userId = pickFirstString(
+    customer?.email,
+    customer?.id,
+    payload.email,
+    payload.customer_email
+  );
+  const threadKey = pickFirstString(
+    payload.id,
+    payload.order_id,
+    payload.ticket_id,
+    userId
+  );
+  return {
+    kind: "message",
+    message: {
+      message: text,
+      userId,
+      threadKey,
+      metadata: {
+        shopifyId: payload.id
+      }
+    }
+  };
+};
+
+const parseZapierWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const text = pickFirstString(
+    payload.message,
+    payload.text,
+    payload.content,
+    payload.body
+  );
+  if (!text) {
+    return { kind: "error", error: "zapier_message_missing" };
+  }
+  const userId = pickFirstString(payload.userId, payload.user_id, payload.email);
+  const threadKey = pickFirstString(
+    payload.threadKey,
+    payload.thread_key,
+    payload.id,
+    userId
+  );
+  return {
+    kind: "message",
+    message: {
+      message: text,
+      userId,
+      threadKey,
+      metadata: {
+        source: "zapier"
+      }
+    }
+  };
+};
+
+const parseWordpressWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const text = pickFirstString(
+    payload.message,
+    payload.content,
+    payload.body,
+    payload.comment,
+    payload.question
+  );
+  if (!text) {
+    return { kind: "error", error: "wordpress_message_missing" };
+  }
+  const userId = pickFirstString(
+    payload.author_email,
+    payload.email,
+    payload.author,
+    payload.userId
+  );
+  const threadKey = pickFirstString(
+    payload.id,
+    payload.comment_ID,
+    payload.post_id,
+    userId
+  );
+  return {
+    kind: "message",
+    message: {
+      message: text,
+      userId,
+      threadKey,
+      metadata: {
+        wordpressId: payload.id
+      }
+    }
+  };
+};
+
 const parseChannelWebhookPayload = (
   channelType: z.infer<typeof channelTypeSchema>,
   payload: Record<string, unknown>
@@ -685,10 +921,20 @@ const parseChannelWebhookPayload = (
       return parseWhatsAppWebhook(payload);
     case "email":
       return parseEmailWebhook(payload);
+    case "messenger":
+      return parseMessengerWebhook(payload);
+    case "instagram":
+      return parseInstagramWebhook(payload);
     case "zendesk":
       return parseZendeskWebhook(payload);
     case "salesforce":
       return parseSalesforceWebhook(payload);
+    case "shopify":
+      return parseShopifyWebhook(payload);
+    case "zapier":
+      return parseZapierWebhook(payload);
+    case "wordpress":
+      return parseWordpressWebhook(payload);
     default:
       return { kind: "error", error: "channel_not_supported" };
   }
@@ -2290,7 +2536,11 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!connectorChannelTypes.has(channel.type)) {
       return reply.code(400).send({ error: "channel_webhook_not_supported" });
     }
-    if (channel.type !== "whatsapp") {
+    if (
+      channel.type !== "whatsapp" &&
+      channel.type !== "messenger" &&
+      channel.type !== "instagram"
+    ) {
       return reply.code(400).send({ error: "channel_webhook_not_supported" });
     }
     const querySchema = z

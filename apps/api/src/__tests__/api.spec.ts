@@ -826,6 +826,14 @@ describe("api routes", () => {
     const billingBody = billingExecuteResponse.json();
     expect(billingBody.execution.output.invoice.currency).toBe("NOK");
     expect(billingBody.execution.output.invoice.amount).toBe(199);
+    expect(billingBody.execution.output.invoice.status).toBe("open");
+    expect(billingBody.execution.output.invoice.id).toMatch(/^in_/);
+    expect(billingBody.execution.output.invoice.paymentLink).toMatch(
+      /^https:\/\/checkout\.stripe\.com/
+    );
+    expect(billingBody.execution.output.invoice.livemode).toBe(false);
+    expect(billingBody.execution.output.customer).toBeDefined();
+    expect(billingBody.execution.output.customer.id).toBe("cus_123");
   });
 
   it("creates and lists conversations with pagination", async () => {

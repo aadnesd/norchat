@@ -17,6 +17,7 @@ import {
   type VectorRecord
 } from "./vector-store.js";
 import { buildHelpPage, buildWidgetScript } from "./ui-templates.js";
+import { createStripeClient, type StripeClient } from "./stripe-client.js";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -1110,19 +1111,41 @@ const executeAction = (
         throw new ActionExecutionError("custom_amount_not_allowed", 400);
       }
       const currency = (input.currency ?? config.currency ?? "NOK").toUpperCase();
-      const invoiceId = `invoice_${crypto.randomUUID()}`;
+      const stripeApiKey =
+        action.config && typeof action.config.stripeApiKey === "string"
+          ? action.config.stripeApiKey
+          : undefined;
+      const stripe = createStripeClient({ apiKey: stripeApiKey });
+      const invoice = stripe.createInvoice({
+        customerId: input.customerId,
+        amount,
+        currency,
+        description: input.description,
+        dueInDays: 30
+      });
+      const paymentLink = stripe.createPaymentLink({
+        invoiceId: invoice.id
+      });
+      const customer = stripe.getCustomer(input.customerId);
       return {
         input,
         output: {
           invoice: {
-            id: invoiceId,
-            customerId: input.customerId,
-            amount,
-            currency,
-            status: "requires_payment",
-            description: input.description,
+            id: invoice.id,
+            customerId: invoice.customerId,
+            amount: invoice.amount,
+            currency: invoice.currency.toUpperCase(),
+            status: invoice.status,
+            description: invoice.description,
+            dueDate: invoice.dueDate,
             createdAt,
-            paymentLink: `https://billing.ralph.example/invoices/${invoiceId}`
+            paymentLink: paymentLink.url,
+            livemode: invoice.livemode
+          },
+          customer: {
+            id: customer.id,
+            currency: customer.currency,
+            balance: customer.balance
           }
         }
       };

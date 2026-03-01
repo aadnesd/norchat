@@ -3595,13 +3595,32 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!access) {
       return reply;
     }
+    const tenant = tenants.get(agent.tenantId);
+    // Clear old vector chunks for this source
+    let deletedChunks = 0;
+    if (tenant) {
+      deletedChunks = await vectorStore.deleteBySourceId(tenant.region, id);
+    }
+    const now = new Date().toISOString();
     const updated: Source = {
       ...source,
       status: "processing",
-      lastSyncedAt: new Date().toISOString()
+      lastSyncedAt: now
     };
     sources.set(id, updated);
-    return { source: updated };
+    // Create a fresh ingestion job so new content can be ingested
+    const kind: IngestionJob["kind"] =
+      source.type === "notion" ? "notion" : source.type === "file" ? "file" : "crawl";
+    const jobId = `job_${crypto.randomUUID()}`;
+    const job: IngestionJob = {
+      id: jobId,
+      sourceId: id,
+      kind,
+      status: "queued",
+      createdAt: now
+    };
+    ingestionJobs.set(jobId, job);
+    return { source: updated, job, deletedChunks };
   });
 
   fastify.delete("/sources/:id", async (request, reply) => {

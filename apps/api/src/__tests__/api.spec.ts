@@ -157,6 +157,10 @@ describe("api routes", () => {
     const retrainBody = retrainResponse.json();
     expect(retrainBody.source.status).toBe("processing");
     expect(retrainBody.source.lastSyncedAt).toBeTypeOf("string");
+    expect(retrainBody.job).toBeDefined();
+    expect(retrainBody.job.sourceId).toBe(source.id);
+    expect(retrainBody.job.status).toBe("queued");
+    expect(retrainBody.deletedChunks).toBeTypeOf("number");
 
     const deleteResponse = await adminInject({
       method: "DELETE",
@@ -164,6 +168,68 @@ describe("api routes", () => {
     });
 
     expect(deleteResponse.statusCode).toBe(204);
+  });
+
+  it("retrain clears old chunks from vector store and creates new ingestion job", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: { name: "Retrain Corp", region: "no" }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: { tenantId: tenant.id, name: "Retrain Agent" }
+    });
+    const agent = agentResponse.json();
+
+    const sourceResponse = await adminInject({
+      method: "POST",
+      url: "/sources",
+      payload: { agentId: agent.id, type: "text", value: "retrain-kb" }
+    });
+    const source = sourceResponse.json();
+
+    // Ingest some text
+    const ingestResponse = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/ingest-text`,
+      payload: { text: "Norway has a long coastline with many fjords and mountains" }
+    });
+    expect(ingestResponse.statusCode).toBe(201);
+
+    // Verify retrieval finds the chunk
+    const retrieveResponse = await adminInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "fjords" }
+    });
+    expect(retrieveResponse.statusCode).toBe(200);
+    const results = retrieveResponse.json();
+    expect(results.items.length).toBeGreaterThan(0);
+
+    // Retrain — should clear old chunks
+    const retrainResponse = await adminInject({
+      method: "POST",
+      url: `/sources/${source.id}/retrain`
+    });
+    expect(retrainResponse.statusCode).toBe(200);
+    const retrainBody = retrainResponse.json();
+    expect(retrainBody.deletedChunks).toBeGreaterThan(0);
+    expect(retrainBody.job.status).toBe("queued");
+    expect(retrainBody.job.sourceId).toBe(source.id);
+
+    // Verify retrieval is now empty
+    const retrieveAfter = await adminInject({
+      method: "POST",
+      url: "/retrieve",
+      payload: { agentId: agent.id, query: "fjords" }
+    });
+    expect(retrieveAfter.statusCode).toBe(200);
+    const afterResults = retrieveAfter.json();
+    expect(afterResults.items.length).toBe(0);
   });
 
   it("queues crawl ingestion job", async () => {

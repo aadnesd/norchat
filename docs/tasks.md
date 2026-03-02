@@ -84,6 +84,11 @@ Why: AC5 was completely unimplemented — Notion is a critical data source for m
 Tests: API integration tests validate Notion source creation, webhook verification, webhook-triggered retrain by sourceId and workspaceId, 404 for unknown sources, sync-check for stale sources, input validation, and nonexistent agent rejection. Tests run: `npm run test -w apps/api`.
 Implementation outcome: `/sources/notion` endpoint creates Notion sources with ingestion jobs and sync state. `/webhooks/notion` handles verification challenges and content change notifications, triggering retrain jobs. `/sources/notion/sync-check` identifies stale sources (>24h since last sync) and auto-triggers retrain. Shared types updated with `NotionSourceCreateInput`, `NotionWebhookPayload`, and `NotionSyncCheckResult`.
 
+20. Ingestion/retrain SLA timing validation.
+Why: Acceptance requires explicit timing guarantees for ingestion/retrain success; SLA compliance must be surfaced and tested to flag slow runs.
+Tests: API integration tests validate ingestion job status updates accept explicit timestamps, flag SLA misses, and reject invalid timing. Retrain auto mode returns duration + SLA status. Tests run: `apps/api/src/__tests__/api.spec.ts`.
+Implementation outcome: Ingestion job status accepts optional timestamps, computes duration + SLA compliance, rejects invalid timing, and retrain auto mode returns duration + SLA flags for cached reingestion.
+
 ## Planned Tasks
 
-No remaining planned tasks as of 2026-03-01.
+No remaining planned tasks as of 2026-03-02.

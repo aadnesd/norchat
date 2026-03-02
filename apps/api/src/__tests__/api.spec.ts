@@ -222,6 +222,8 @@ describe("api routes", () => {
     expect(retrainBody.mode).toBe("auto");
     expect(retrainBody.reingestedChunks).toBeGreaterThan(0);
     expect(retrainBody.source.status).toBe("ready");
+    expect(retrainBody.durationMs).toBeGreaterThanOrEqual(0);
+    expect(retrainBody.slaMet).toBe(true);
 
     // Verify retrieval still works after retrain (chunks were re-created)
     const retrieveAfter = await adminInject({
@@ -311,13 +313,21 @@ describe("api routes", () => {
     expect(chatBeforeBody.confidence).toBeGreaterThan(0);
 
     // Retrain — auto-re-ingests from cache
+    const retrainStartedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const retrainCompletedAt = new Date().toISOString();
     const retrainResponse = await adminInject({
       method: "POST",
-      url: `/sources/${source.id}/retrain`
+      url: `/sources/${source.id}/retrain`,
+      payload: {
+        startedAt: retrainStartedAt,
+        completedAt: retrainCompletedAt
+      }
     });
     const retrainBody = retrainResponse.json();
     expect(retrainBody.mode).toBe("auto");
     expect(retrainBody.source.status).toBe("ready");
+    expect(retrainBody.durationMs).toBeGreaterThanOrEqual(0);
+    expect(retrainBody.slaMet).toBe(false);
 
     // Chat again — should still work after retrain
     const chatAfter = await adminInject({
@@ -426,10 +436,13 @@ describe("api routes", () => {
     });
     expect(jobResponse.statusCode).toBe(200);
 
+    const startedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const completedAt = new Date().toISOString();
+
     const processingResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${fileBody.job.id}/status`,
-      payload: { status: "processing" }
+      payload: { status: "processing", startedAt }
     });
     expect(processingResponse.statusCode).toBe(200);
     expect(processingResponse.json().job.status).toBe("processing");
@@ -437,13 +450,60 @@ describe("api routes", () => {
     const completeResponse = await adminInject({
       method: "POST",
       url: `/ingestion-jobs/${fileBody.job.id}/status`,
-      payload: { status: "complete" }
+      payload: { status: "complete", startedAt, completedAt }
     });
     expect(completeResponse.statusCode).toBe(200);
     const completeBody = completeResponse.json();
     expect(completeBody.job.status).toBe("complete");
     expect(completeBody.job.durationMs).toBeGreaterThanOrEqual(0);
-    expect(completeBody.job.slaMet).toBe(true);
+    expect(completeBody.job.slaMet).toBe(false);
+  });
+
+  it("rejects ingestion completion timestamps where completion precedes start", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "SLA Guard Tenant",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "SLA Guard Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const fileResponse = await adminInject({
+      method: "POST",
+      url: "/sources/file",
+      payload: {
+        agentId: agent.id,
+        filename: "sla.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 256
+      }
+    });
+    const fileBody = fileResponse.json();
+
+    const invalidResponse = await adminInject({
+      method: "POST",
+      url: `/ingestion-jobs/${fileBody.job.id}/status`,
+      payload: {
+        status: "complete",
+        startedAt: new Date(Date.now() + 60_000).toISOString(),
+        completedAt: new Date().toISOString()
+      }
+    });
+
+    expect(invalidResponse.statusCode).toBe(400);
+    expect(invalidResponse.json().error).toBe("completed_before_started");
   });
 
   it("ingests text chunks and retrieves relevant content", async () => {

@@ -1411,19 +1411,31 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     return Math.max(0, endMs - startMs);
   };
 
+  const computeIngestionSlaResult = (startedAt: string, completedAt: string) => {
+    const durationMs = computeIngestionDuration(startedAt, completedAt);
+    return {
+      durationMs,
+      slaMet: durationMs <= INGESTION_SLA_MS
+    };
+  };
+
   const applyIngestionCompletion = (
     job: IngestionJob,
-    completedAt: string
+    completedAt: string,
+    startedAtOverride?: string
   ): IngestionJob => {
-    const startedAt = job.startedAt ?? job.createdAt;
-    const durationMs = computeIngestionDuration(startedAt, completedAt);
+    const startedAt = startedAtOverride ?? job.startedAt ?? job.createdAt;
+    const { durationMs, slaMet } = computeIngestionSlaResult(
+      startedAt,
+      completedAt
+    );
     return {
       ...job,
       status: "complete",
       startedAt,
       completedAt,
       durationMs,
-      slaMet: durationMs <= INGESTION_SLA_MS
+      slaMet
     } satisfies IngestionJob;
   };
 
@@ -3599,9 +3611,13 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   fastify.post("/ingestion-jobs/:id/status", async (request, reply) => {
     const paramsSchema = z.object({ id: z.string().min(1) });
-    const bodySchema = z.object({ status: ingestionJobStatusSchema });
+    const bodySchema = z.object({
+      status: ingestionJobStatusSchema,
+      startedAt: z.string().datetime().optional(),
+      completedAt: z.string().datetime().optional()
+    });
     const { id } = paramsSchema.parse(request.params);
-    const { status } = bodySchema.parse(request.body);
+    const { status, startedAt, completedAt } = bodySchema.parse(request.body);
     const job = ingestionJobs.get(id);
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
@@ -3618,16 +3634,32 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     if (!access) {
       return reply;
     }
+    if (status === "processing" && completedAt) {
+      return reply
+        .code(400)
+        .send({ error: "completed_at_not_allowed_for_processing" });
+    }
+    if (status === "complete" && startedAt && completedAt) {
+      const startMs = new Date(startedAt).getTime();
+      const endMs = new Date(completedAt).getTime();
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs < startMs) {
+        return reply.code(400).send({ error: "completed_before_started" });
+      }
+    }
     let updatedJob: IngestionJob = { ...job, status };
     if (status === "processing") {
       updatedJob = {
         ...job,
         status,
-        startedAt: job.startedAt ?? new Date().toISOString()
+        startedAt: startedAt ?? job.startedAt ?? new Date().toISOString()
       };
     }
     if (status === "complete") {
-      updatedJob = applyIngestionCompletion(job, new Date().toISOString());
+      updatedJob = applyIngestionCompletion(
+        job,
+        completedAt ?? new Date().toISOString(),
+        startedAt
+      );
     }
     ingestionJobs.set(id, updatedJob);
 
@@ -3814,7 +3846,13 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
   fastify.post("/sources/:id/retrain", async (request, reply) => {
     const paramsSchema = z.object({ id: z.string().min(1) });
+    const bodySchema = z.object({
+      startedAt: z.string().datetime().optional(),
+      completedAt: z.string().datetime().optional()
+    });
     const { id } = paramsSchema.parse(request.params);
+    const { startedAt: startedAtInput, completedAt: completedAtInput } =
+      bodySchema.parse(request.body ?? {});
     const source = sources.get(id);
     if (!source) {
       return reply.code(404).send({ error: "source_not_found" });
@@ -3832,6 +3870,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     const deletedChunks = tenant
       ? await vectorStore.deleteBySourceId(tenant.region, id)
       : 0;
+    if (startedAtInput && completedAtInput) {
+      const startMs = new Date(startedAtInput).getTime();
+      const endMs = new Date(completedAtInput).getTime();
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs < startMs) {
+        return reply.code(400).send({ error: "completed_before_started" });
+      }
+    }
+    const retrainStartedAt = startedAtInput ?? new Date().toISOString();
     const now = new Date().toISOString();
 
     // Check if we have cached content for automatic re-ingestion
@@ -3883,6 +3929,11 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       };
       sources.set(id, updated);
 
+      const retrainCompletedAt = completedAtInput ?? new Date().toISOString();
+      const { durationMs, slaMet } = computeIngestionSlaResult(
+        retrainStartedAt,
+        retrainCompletedAt
+      );
       recordMetricEvent({
         type: "ingestion_completed",
         agentId: source.agentId,
@@ -3892,7 +3943,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
           sourceId: source.id,
           kind: "retrain",
           chunkCount,
-          deletedChunks
+          deletedChunks,
+          durationMs,
+          slaMet
         }
       });
 
@@ -3900,7 +3953,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         source: updated,
         deletedChunks,
         reingestedChunks: chunkCount,
-        mode: "auto"
+        mode: "auto",
+        durationMs,
+        slaMet
       };
     }
 

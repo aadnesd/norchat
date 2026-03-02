@@ -8,7 +8,7 @@ explicit verification.
 
 1) New tenant creates an agent, adds a website URL, and ingestion/retrain succeeds
 - Evidence: API integration coverage exercises tenant creation, agent creation,
-  website sources, retrain behavior, and job queueing.
+  website sources, retrain behavior, job queueing, and SLA timing validation.
 - Tests: `apps/api/src/__tests__/api.spec.ts`
 
 2) Agent with multiple sources answers with correct citations
@@ -41,10 +41,14 @@ explicit verification.
 
 ## Gaps / Follow-ups
 
-- SLA definition for ingestion/retrain success is not codified in tests; consider
-  adding explicit timing checks or operational SLO tracking.
+- SLA timing validation now codified; follow-up could add operational SLO dashboards
+  for long-running ingestion jobs if needed.
 
 ## Validation Runs
 
 - 2026-03-01: `npm run test -w apps/api` (pass). Confirms API-level coverage for
   ingestion, retrieval, actions, widget streaming, and GDPR behaviors.
+- 2026-03-01: `npm run test -w apps/api`, `npm run lint`, `npm run build` (pass).
+  Backpressure checks rerun for build.blocked handling.
+- 2026-03-01: `npm run test -w apps/api`, `npm run lint`, `npm run build` (pass).
+  Backpressure checks rerun for task-1772400451-0a99.

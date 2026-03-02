@@ -6,6 +6,18 @@
 
 ## Fixes
 
+### mem-1772474416-6877
+> failure: cmd=ralph tools memory add "8starlabs UI source: https://github.com/8starlabs/ui; docs at https://ui.8starlabs.com. Library built on shadcn/ui and uses shadcn registry/CLI. Install via ; prerequisites: shadcn/ui init + Tailwind CSS (Node 18+)." -t context --tags ui,shadcn,8starlabs, exit=127, error=zsh:1: no such file or directory: component, next=avoid unquoted <> in shell commands
+<!-- tags: tooling, error-handling | created: 2026-03-02 -->
+
+### mem-1772474326-c505
+> failure: cmd=read /Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/scratchpad.md, exit=tool_error, error=File not found, next=create scratchpad file before read
+<!-- tags: tooling, error-handling | created: 2026-03-02 -->
+
+### mem-1772468320-3cbe
+> failure: cmd=read /Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/scratchpad.md, exit=tool_error, error=File not found, next=create scratchpad file before read
+<!-- tags: tooling, error-handling | created: 2026-03-02 -->
+
 ### mem-1771674199-0b55
 > failure: cmd=npm run test -w packages/shared, exit=1, error=Missing script: test, next=skip tests for shared package or add test script
 <!-- tags: testing, tooling | created: 2026-02-21 -->
@@ -59,6 +71,14 @@
 <!-- tags: tooling, error-handling | created: 2026-02-20 -->
 
 ## Context
+
+### mem-1772474412-02a0
+> 8starlabs UI source: https://github.com/8starlabs/ui; docs at https://ui.8starlabs.com. Built on shadcn/ui and uses registry/CLI. Install via npx shadcn@latest add https://ui.8starlabs.com/r/<component>.json; prerequisites: shadcn/ui init + Tailwind CSS (Node 18+).
+<!-- tags: ui, shadcn, 8starlabs | created: 2026-03-02 -->
+
+### mem-1772474406-8815
+> 8starlabs UI source: https://github.com/8starlabs/ui; docs at https://ui.8starlabs.com. Library built on shadcn/ui and uses shadcn registry/CLI. Install via ; prerequisites: shadcn/ui init + Tailwind CSS (Node 18+).
+<!-- tags: ui, shadcn, 8starlabs | created: 2026-03-02 -->
 
 ### mem-1772397033-8f9e
 > StripeClient now has SDK-style resource-namespaced interface (stripe.invoices.create, stripe.subscriptions.cancel, etc.) with in-memory state, StripeError class with typed error codes, and legacy backward-compat methods. Action executor supports stripe_billing, stripe_subscription, and stripe_refund types. 90 tests total.

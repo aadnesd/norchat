@@ -189,3 +189,5 @@ All 7 acceptance criteria met. All 11 concrete tasks implemented. Final verifica
 - No real LLM integration (concatenates chunks) — swap in when ready
 - Header-based auth (no JWT) — upgrade for production
 - No separate worker process — inline job processing sufficient for MVP
+
+Plan: investigate 8starlabs UI source and usage guidance; capture integration prerequisites (shadcn init, Tailwind). Note repo uses custom CSS, no shadcn/radix deps. Prepare findings for integration task.

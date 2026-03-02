@@ -89,6 +89,11 @@ Why: Acceptance requires explicit timing guarantees for ingestion/retrain succes
 Tests: API integration tests validate ingestion job status updates accept explicit timestamps, flag SLA misses, and reject invalid timing. Retrain auto mode returns duration + SLA status. Tests run: `apps/api/src/__tests__/api.spec.ts`.
 Implementation outcome: Ingestion job status accepts optional timestamps, computes duration + SLA compliance, rejects invalid timing, and retrain auto mode returns duration + SLA flags for cached reingestion.
 
+21. UI library usage audit (shadcn/ui MCP + 8starlabs UI).
+Why: The spec requires both component libraries; current web UI appears custom and dependency lists show no shadcn/radix/8starlabs packages.
+Audit summary: Searched apps/web and packages/shared for shadcn/ui, radix-ui, class-variance-authority, tailwind-merge, and 8starlabs references; no matches found. `apps/web/package.json` lists only React + tooling deps. App UI is built with custom CSS classes in `apps/web/src/pages/App.tsx` and `apps/web/src/styles.css`.
+Next step: plan a follow-up task to integrate shadcn/ui MCP + 8starlabs UI components into the web app (replace core panels, form controls, and cards with library components) or document approved alternatives if another UI layer is intended.
+
 ## Planned Tasks
 
 No remaining planned tasks as of 2026-03-02.

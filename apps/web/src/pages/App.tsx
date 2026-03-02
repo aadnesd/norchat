@@ -4,6 +4,8 @@ import {
   type MetricConversation,
   type MetricsSummary
 } from "../api";
+import { Button } from "@/components/ui/button";
+import StatusIndicator from "@/components/ui/status-indicator";
 
 const apiBase = import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:4000";
 const apiClient = createApiClient(apiBase);
@@ -542,7 +544,9 @@ export function App() {
           </div>
           <div>
             <p className="metric-label">GDPR mode</p>
-            <p className="metric-value">Enabled</p>
+            <div className="metric-value">
+              <StatusIndicator state="active" label="Enabled" size="sm" labelClassName="text-white" />
+            </div>
           </div>
         </div>
       </header>
@@ -599,9 +603,9 @@ export function App() {
             <button type="button" className="ghost" onClick={previousStep} disabled={stepIndex === 0}>
               Back
             </button>
-            <button type="button" className="primary" onClick={handleContinue} disabled={!canContinue}>
+            <Button type="button" onClick={handleContinue} disabled={!canContinue}>
               {continueLabel}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -705,9 +709,14 @@ export function App() {
                     placeholder="https://help.company.no"
                   />
                 </label>
-                <button type="button" className="secondary" onClick={handleAddWebsite} disabled={isSubmitting}>
-                  Add website crawl
-                </button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleAddWebsite}
+              disabled={isSubmitting}
+            >
+              Add website crawl
+            </Button>
                 <label>
                   Snippet title
                   <input
@@ -725,9 +734,14 @@ export function App() {
                     placeholder="Paste a short policy or FAQ answer to ingest."
                   />
                 </label>
-                <button type="button" className="secondary" onClick={handleAddSnippet} disabled={isSubmitting}>
-                  Add snippet source
-                </button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleAddSnippet}
+              disabled={isSubmitting}
+            >
+              Add snippet source
+            </Button>
               </div>
 
               <div className="source-grid">
@@ -746,9 +760,14 @@ export function App() {
                 )}
               </div>
               <div className="panel-controls">
-                <button type="button" className="secondary" onClick={handleRetrain} disabled={isSubmitting}>
-                  Trigger retrain
-                </button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleRetrain}
+              disabled={isSubmitting}
+            >
+              Trigger retrain
+            </Button>
               </div>
               <div className="ingestion-grid">
                 {ingestionJobs.length === 0 ? (
@@ -785,15 +804,25 @@ export function App() {
                 <input value={domain} onChange={(event) => setDomain(event.target.value)} />
               </label>
               <div className="panel-controls">
-                <button type="button" className="secondary" onClick={handleDeployChannel} disabled={isSubmitting}>
-                  Deploy channel
-                </button>
-                {activeChannel && (
-                  <button type="button" className="ghost" onClick={handleUpdateAllowlist} disabled={isSubmitting}>
-                    Update allowlist
-                  </button>
-                )}
-              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleDeployChannel}
+                disabled={isSubmitting}
+              >
+                Deploy channel
+              </Button>
+              {activeChannel && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleUpdateAllowlist}
+                  disabled={isSubmitting}
+                >
+                  Update allowlist
+                </Button>
+              )}
+            </div>
               <div className="info-card">
                 <h4>Embed snippet</h4>
                 <code>{embedSnippet}</code>
@@ -815,12 +844,12 @@ export function App() {
                   </div>
                 ))}
               </div>
-              <div className="preview-card">
-                <p className="status-label">Widget preview</p>
-                <p className="preview-title">Hi, I am {agentName}.</p>
-                <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
-                <button type="button" className="primary">Open live chat</button>
-              </div>
+            <div className="preview-card">
+              <p className="status-label">Widget preview</p>
+              <p className="preview-title">Hi, I am {agentName}.</p>
+              <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
+              <Button type="button">Open live chat</Button>
+            </div>
             </div>
           )}
         </div>

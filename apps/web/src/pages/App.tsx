@@ -5,7 +5,11 @@ import {
   type MetricsSummary
 } from "../api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import StatusIndicator from "@/components/ui/status-indicator";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 
 const apiBase = import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:4000";
 const apiClient = createApiClient(apiBase);
@@ -560,7 +564,9 @@ export function App() {
                 Complete each step to deploy your first widget and start deflecting tickets.
               </p>
             </div>
-            <span className="badge">Step {stepIndex + 1} of {steps.length}</span>
+            <Badge className="badge" variant="secondary">
+              Step {stepIndex + 1} of {steps.length}
+            </Badge>
           </div>
           <div className="progress-track">
             <div className="progress-bar">
@@ -623,18 +629,18 @@ export function App() {
             <div className="form-grid">
               <label>
                 Workspace name
-                <input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
+                <Input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} />
               </label>
               <label>
                 Data region
-                <select value={region} onChange={(event) => setRegion(event.target.value)}>
+                <Select value={region} onChange={(event) => setRegion(event.target.value)}>
                   <option value="norway-oslo">Norway (Oslo)</option>
                   <option value="eu-north">EU North (Stockholm)</option>
-                </select>
+                </Select>
               </label>
               <label>
                 Data residency profile
-                <input value={dataResidency} onChange={(event) => setDataResidency(event.target.value)} />
+                <Input value={dataResidency} onChange={(event) => setDataResidency(event.target.value)} />
               </label>
               <div className="info-card">
                 <h4>GDPR by default</h4>
@@ -653,19 +659,19 @@ export function App() {
             <div className="form-grid">
               <label>
                 Agent name
-                <input value={agentName} onChange={(event) => setAgentName(event.target.value)} />
+                <Input value={agentName} onChange={(event) => setAgentName(event.target.value)} />
               </label>
               <label>
                 Tone preset
-                <select value={agentTone} onChange={(event) => setAgentTone(event.target.value)}>
+                <Select value={agentTone} onChange={(event) => setAgentTone(event.target.value)}>
                   <option>Warm + professional</option>
                   <option>Concise + direct</option>
                   <option>Playful + friendly</option>
-                </select>
+                </Select>
               </label>
               <label>
                 Base prompt
-                <textarea
+                <Textarea
                   rows={4}
                   value={basePrompt}
                   onChange={(event) => setBasePrompt(event.target.value)}
@@ -704,7 +710,7 @@ export function App() {
               <div className="form-grid">
                 <label>
                   Website URL
-                  <input
+                  <Input
                     value={websiteUrl}
                     onChange={(event) => setWebsiteUrl(event.target.value)}
                     placeholder="https://help.company.no"
@@ -720,7 +726,7 @@ export function App() {
             </Button>
                 <label>
                   Snippet title
-                  <input
+                  <Input
                     value={snippetTitle}
                     onChange={(event) => setSnippetTitle(event.target.value)}
                     placeholder="Returns policy"
@@ -728,7 +734,7 @@ export function App() {
                 </label>
                 <label>
                   Knowledge snippet
-                  <textarea
+                  <Textarea
                     rows={4}
                     value={snippetContent}
                     onChange={(event) => setSnippetContent(event.target.value)}
@@ -755,7 +761,9 @@ export function App() {
                         <p className="source-type">{source.type}</p>
                         <p className="source-value">{source.value ?? "Configured source"}</p>
                       </div>
-                      <span className={`pill ${source.status}`}>{source.status}</span>
+                      <Badge className={`pill ${source.status}`} variant="secondary">
+                        {source.status}
+                      </Badge>
                     </div>
                   ))
                 )}
@@ -794,15 +802,18 @@ export function App() {
             <div className="form-grid">
               <label>
                 Channel
-                <select value={channelType} onChange={(event) => setChannelType(event.target.value as ChannelType)}>
+                <Select
+                  value={channelType}
+                  onChange={(event) => setChannelType(event.target.value as ChannelType)}
+                >
                   {channelOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label>
                 Allowed domain
-                <input value={domain} onChange={(event) => setDomain(event.target.value)} />
+                <Input value={domain} onChange={(event) => setDomain(event.target.value)} />
               </label>
               <div className="panel-controls">
               <Button
@@ -841,7 +852,9 @@ export function App() {
                       <p className="checklist-title">{item.label}</p>
                       <p className="checklist-detail">{item.detail}</p>
                     </div>
-                    <span className="pill soft">{item.status}</span>
+                    <Badge className="pill soft" variant="outline">
+                      {item.status}
+                    </Badge>
                   </div>
                 ))}
               </div>
@@ -865,7 +878,7 @@ export function App() {
                 Monitor deflection, response speed, and retrieval quality across channels.
               </p>
             </div>
-            <span className="badge">{metricsWindowLabel}</span>
+            <Badge className="badge" variant="secondary">{metricsWindowLabel}</Badge>
           </div>
           {metricsError && <div className="notice error">{metricsError}</div>}
           <div className="metric-grid">
@@ -1043,7 +1056,9 @@ export function App() {
               "Cal.com",
               "GDPR controls"
             ].map((item) => (
-              <span key={item} className="pill soft">{item}</span>
+              <Badge key={item} className="pill soft" variant="outline">
+                {item}
+              </Badge>
             ))}
           </div>
         </div>

@@ -30,6 +30,12 @@ Run API tests:
 npm run test -w apps/api
 ```
 
+Run web tests:
+
+```bash
+npm run test -w apps/web
+```
+
 Run full build:
 
 ```bash

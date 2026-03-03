@@ -21,7 +21,7 @@ describe("onboarding api client", () => {
       json: async () => ({ id: "ok" })
     });
 
-    const api = createApiClient(baseUrl);
+    const api = createApiClient(baseUrl, "user_frontend");
     await api.createTenant({ name: "Nordic Care", region: "norway-oslo", plan: "starter" });
     await api.createAgent({ tenantId: "tenant_123", name: "Hanna" });
 
@@ -35,6 +35,14 @@ describe("onboarding api client", () => {
 
     expect(tenantOptions?.method).toBe("POST");
     expect(agentOptions?.method).toBe("POST");
+    expect(tenantOptions?.headers).toMatchObject({
+      "Content-Type": "application/json",
+      "x-user-id": "user_frontend"
+    });
+    expect(agentOptions?.headers).toMatchObject({
+      "Content-Type": "application/json",
+      "x-user-id": "user_frontend"
+    });
 
     expect(JSON.parse(tenantOptions?.body as string)).toMatchObject({
       name: "Nordic Care",

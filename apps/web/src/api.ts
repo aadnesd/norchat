@@ -155,10 +155,16 @@ type ApiError = {
   message?: string;
 };
 
-const apiFetch = async <T,>(baseUrl: string, path: string, options: RequestInit): Promise<T> => {
+const apiFetch = async <T,>(
+  baseUrl: string,
+  path: string,
+  options: RequestInit,
+  userId: string
+): Promise<T> => {
   const response = await fetch(`${baseUrl}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      "x-user-id": userId,
       ...(options.headers ?? {})
     },
     ...options
@@ -189,23 +195,23 @@ const buildQuery = (params: Record<string, string | number | undefined>) => {
   return queryString ? `?${queryString}` : "";
 };
 
-export const createApiClient = (baseUrl: string) => {
+export const createApiClient = (baseUrl: string, userId = "user_admin") => {
   return {
     createTenant: (input: TenantCreateInput) =>
       apiFetch<Tenant>(baseUrl, "/tenants", {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     createAgent: (input: AgentCreateInput) =>
       apiFetch<Agent>(baseUrl, "/agents", {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     createSource: (input: SourceCreateInput) =>
       apiFetch<Source>(baseUrl, "/sources", {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     createCrawlSource: (input: {
       agentId: string;
       startUrls: string[];
@@ -217,26 +223,26 @@ export const createApiClient = (baseUrl: string) => {
       apiFetch<{ source: Source; job: IngestionJob }>(baseUrl, "/sources/crawl", {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     ingestText: (sourceId: string, input: TextIngestionInput) =>
       apiFetch<{ chunks: unknown[] }>(baseUrl, `/sources/${sourceId}/ingest-text`, {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     retrainSource: (sourceId: string) =>
       apiFetch<{ source: Source }>(baseUrl, `/sources/${sourceId}/retrain`, {
         method: "POST"
-      }),
+      }, userId),
     createChannel: (input: ChannelCreateInput) =>
       apiFetch<Channel>(baseUrl, "/channels", {
         method: "POST",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     updateChannel: (channelId: string, input: ChannelUpdateInput) =>
       apiFetch<{ channel: Channel }>(baseUrl, `/channels/${channelId}`, {
         method: "PATCH",
         body: JSON.stringify(input)
-      }),
+      }, userId),
     getMetricsSummary: (input: {
       tenantId?: string;
       agentId?: string;
@@ -249,7 +255,8 @@ export const createApiClient = (baseUrl: string) => {
         `/metrics/summary${buildQuery(input)}`,
         {
           method: "GET"
-        }
+        },
+        userId
       ),
     getMetricConversations: (input: {
       tenantId?: string;
@@ -265,7 +272,8 @@ export const createApiClient = (baseUrl: string) => {
         `/metrics/conversations${buildQuery(input)}`,
         {
           method: "GET"
-        }
+        },
+        userId
       )
   };
 };

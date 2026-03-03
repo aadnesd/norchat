@@ -94,6 +94,13 @@ Why: The onboarding flow needed to standardize on shared primitives while preser
 Tests: `npm run test -w apps/web`, `npm run build`.
 Implementation outcome: `apps/web/src/pages/App.tsx` now uses shared shadcn-style primitives (`Button`, `Input`, `Select`, `Textarea`, `Badge`) from `apps/web/src/components/ui`; 8starlabs registry usage is present via `apps/web/components.json` and the shared `status-indicator` component; onboarding forms and badges now use shared primitives.
 
+22. Onboarding auth-header blocker is resolved (`x-user-id` propagation in web API requests).
+Why: Playwright onboarding step 1 failed with `user_required` because the web API client omitted `x-user-id`, blocking onboarding progression.
+Tests: `npm run test -w apps/web`, `npm run build -w apps/web`; Playwright CLI re-check now advances onboarding to step 2 (remaining console error is favicon 404).
+Implementation outcome: Added user header support in `apps/web/src/api.ts`, wired `VITE_API_USER_ID` with default `user_admin` in `apps/web/src/pages/App.tsx`, and updated `apps/web/src/pages/App.test.tsx` to assert `x-user-id`.
+
 ## Planned Tasks
 
-No remaining planned tasks as of 2026-03-03.
+1. [OPEN] Fix API dev script ESM loader mismatch in `apps/api`.
+Why: `npm run dev -w apps/api` currently fails with `Must use import to load ES Module` from `ts-node-dev`, blocking local API development.
+Tests needed: After the fix, `npm run dev -w apps/api` starts without ESM loader errors, and `npm run test -w apps/api` still passes.

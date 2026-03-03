@@ -12,7 +12,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 
 const apiBase = import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:4000";
-const apiClient = createApiClient(apiBase);
+const apiUserId = import.meta.env?.VITE_API_USER_ID ?? "user_admin";
+const apiClient = createApiClient(apiBase, apiUserId);
 
 const steps = [
   {

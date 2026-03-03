@@ -50,3 +50,12 @@ DEC-004
 - Reasoning: Shared primitives improve consistency and reuse, and retaining existing layout CSS minimizes migration risk
 - Reversibility: Moderate; component primitives and layout can be adjusted independently in future iterations
 - Timestamp (UTC ISO 8601): 2026-03-03T19:00:53Z
+
+DEC-005
+- Decision: Inject `x-user-id` from the web API client with environment override and default fallback
+- Chosen Option: Read `VITE_API_USER_ID` in `apps/web/src/pages/App.tsx` (default `user_admin`) and pass it to the API client so onboarding requests include `x-user-id`
+- Confidence (0-100): 93
+- Alternatives Considered: Keep requests headerless, hardcode a user id in the API client, or defer until full auth rollout
+- Reasoning: Resolves the `user_required` onboarding blocker immediately with minimal surface area while preserving environment-level override control
+- Reversibility: High; this can be replaced by authenticated user context once auth is fully wired
+- Timestamp (UTC ISO 8601): 2026-03-03T19:54:12Z

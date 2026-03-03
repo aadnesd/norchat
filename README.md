@@ -14,7 +14,7 @@ npm install
 npm run dev
 ```
 
-Note: The API stores vector data under `data/vector-store` by default. Override with `VECTOR_STORE_DIR`. The web app uses `VITE_API_BASE_URL` (defaults to `http://localhost:4000`) to talk to the API.
+Note: The API stores vector data under `data/vector-store` by default. Override with `VECTOR_STORE_DIR`. The web app uses `VITE_API_BASE_URL` (defaults to `http://localhost:4000`) to talk to the API, and onboarding requests send `x-user-id` from `VITE_API_USER_ID` (default `user_admin`).
 
 ## Validation
 

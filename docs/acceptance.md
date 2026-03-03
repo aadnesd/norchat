@@ -44,6 +44,24 @@ explicit verification.
 - SLA timing validation now codified; follow-up could add operational SLO dashboards
   for long-running ingestion jobs if needed.
 
+## Beta Release Validation Runbook
+
+1. Ensure dependencies and browser runtime are installed:
+   - `npm install`
+   - `npx playwright install chromium`
+2. Run the automated release gates from the repo root:
+   - `npm run acceptance:beta`
+3. Optional CI operator path: trigger the **Beta Acceptance** GitHub Actions
+   workflow (`.github/workflows/beta-acceptance.yml`) before beta release sign-off.
+
+### Operator actions on failures
+
+- Lint/test/build failure: fix the reported issue, rerun the failing command, then
+  rerun `npm run acceptance:beta` before proceeding.
+- Critical onboarding E2E failure: inspect `apps/web/playwright-report` (or the
+  uploaded CI artifact), rerun `npm run e2e -w apps/web -- tests/onboarding.spec.ts`,
+  and block release until onboarding passes.
+
 ## Validation Runs
 
 - 2026-03-01: `npm run test -w apps/api` (pass). Confirms API-level coverage for
@@ -52,3 +70,4 @@ explicit verification.
   Backpressure checks rerun for build.blocked handling.
 - 2026-03-01: `npm run test -w apps/api`, `npm run lint`, `npm run build` (pass).
   Backpressure checks rerun for task-1772400451-0a99.
+- 2026-03-03: `npm run lint`, `npm test`, `npm run build`, `npm run e2e -w apps/web -- tests/onboarding.spec.ts` (pass). Baseline release gates validated for beta acceptance automation.

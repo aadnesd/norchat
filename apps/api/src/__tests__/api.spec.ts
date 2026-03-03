@@ -9,10 +9,13 @@ import { buildServer } from "../index.js";
 describe("api routes", () => {
   let server: FastifyInstance;
   let vectorStoreDir: string;
+  let runtimeStoreDir: string;
 
   beforeAll(async () => {
     vectorStoreDir = await mkdtemp(path.join(tmpdir(), "vector-store-"));
+    runtimeStoreDir = await mkdtemp(path.join(tmpdir(), "runtime-store-"));
     process.env.VECTOR_STORE_DIR = vectorStoreDir;
+    process.env.RUNTIME_STORE_DIR = runtimeStoreDir;
     server = await buildServer();
     await server.ready();
   });
@@ -22,7 +25,11 @@ describe("api routes", () => {
     if (vectorStoreDir) {
       await rm(vectorStoreDir, { recursive: true, force: true });
     }
+    if (runtimeStoreDir) {
+      await rm(runtimeStoreDir, { recursive: true, force: true });
+    }
     delete process.env.VECTOR_STORE_DIR;
+    delete process.env.RUNTIME_STORE_DIR;
   });
 
   const authHeaders = (userId = "user_admin") => ({
@@ -457,6 +464,155 @@ describe("api routes", () => {
     expect(completeBody.job.status).toBe("complete");
     expect(completeBody.job.durationMs).toBeGreaterThanOrEqual(0);
     expect(completeBody.job.slaMet).toBe(false);
+  });
+
+  it("persists ingestion jobs, metrics, and audit runtime state across restarts", async () => {
+    const restartVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-restart-")
+    );
+    const restartRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-restart-")
+    );
+    const runtimeStateFile = path.join(
+      restartRuntimeStoreDir,
+      "runtime-state.json"
+    );
+    let firstServer: FastifyInstance | undefined;
+    let secondServer: FastifyInstance | undefined;
+
+    try {
+      firstServer = await buildServer({
+        vectorStoreDir: restartVectorStoreDir,
+        runtimeStoreDir: restartRuntimeStoreDir
+      });
+      await firstServer.ready();
+
+      const injectFirst = (options: InjectOptions) =>
+        firstServer!.inject({
+          ...options,
+          headers: {
+            ...options.headers,
+            "x-user-id": "user_runtime_owner"
+          }
+        });
+
+      const tenantResponse = await injectFirst({
+        method: "POST",
+        url: "/tenants",
+        payload: {
+          name: "Runtime Tenant",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+      const tenant = tenantResponse.json();
+
+      const agentResponse = await injectFirst({
+        method: "POST",
+        url: "/agents",
+        payload: {
+          tenantId: tenant.id,
+          name: "Runtime Agent"
+        }
+      });
+      expect(agentResponse.statusCode).toBe(201);
+      const agent = agentResponse.json();
+
+      const sourceResponse = await injectFirst({
+        method: "POST",
+        url: "/sources/file",
+        payload: {
+          agentId: agent.id,
+          filename: "runtime.pdf",
+          contentType: "application/pdf",
+          sizeBytes: 512
+        }
+      });
+      expect(sourceResponse.statusCode).toBe(201);
+      const sourceBody = sourceResponse.json();
+
+      const statusResponse = await injectFirst({
+        method: "POST",
+        url: `/ingestion-jobs/${sourceBody.job.id}/status`,
+        payload: {
+          status: "complete",
+          startedAt: new Date(Date.now() - 30_000).toISOString(),
+          completedAt: new Date().toISOString()
+        }
+      });
+      expect(statusResponse.statusCode).toBe(200);
+
+      const metricResponse = await firstServer.inject({
+        method: "POST",
+        url: "/metrics/events",
+        payload: {
+          type: "retrieval_performed",
+          tenantId: tenant.id,
+          timestamp: new Date().toISOString(),
+          metadata: { latencyMs: 42 }
+        }
+      });
+      expect(metricResponse.statusCode).toBe(201);
+
+      await firstServer.close();
+      firstServer = undefined;
+
+      const persisted = JSON.parse(
+        await readFile(runtimeStateFile, "utf8")
+      ) as {
+        ingestionJobs: Array<{ id: string }>;
+        metricEvents: Array<{ type: string }>;
+        auditEvents: Array<{ action: string }>;
+      };
+      expect(
+        persisted.ingestionJobs.some((job) => job.id === sourceBody.job.id)
+      ).toBe(true);
+      expect(
+        persisted.metricEvents.some(
+          (event) => event.type === "ingestion_completed"
+        )
+      ).toBe(true);
+      expect(
+        persisted.auditEvents.some((event) => event.action === "tenant.created")
+      ).toBe(true);
+
+      secondServer = await buildServer({
+        vectorStoreDir: restartVectorStoreDir,
+        runtimeStoreDir: restartRuntimeStoreDir
+      });
+      await secondServer.ready();
+
+      const summaryResponse = await secondServer.inject({
+        method: "GET",
+        url: "/metrics/summary"
+      });
+      expect(summaryResponse.statusCode).toBe(200);
+      const summary = summaryResponse.json();
+      expect(summary.totals.ingestionCompleted).toBeGreaterThanOrEqual(1);
+      expect(summary.totals.retrievals).toBeGreaterThanOrEqual(1);
+
+      const persistedJobResponse = await secondServer.inject({
+        method: "POST",
+        url: `/ingestion-jobs/${sourceBody.job.id}/status`,
+        headers: {
+          "x-user-id": "user_runtime_owner"
+        },
+        payload: {
+          status: "queued"
+        }
+      });
+      expect(persistedJobResponse.statusCode).toBe(404);
+      expect(persistedJobResponse.json().error).toBe("source_not_found");
+    } finally {
+      if (secondServer) {
+        await secondServer.close();
+      }
+      if (firstServer) {
+        await firstServer.close();
+      }
+      await rm(restartRuntimeStoreDir, { recursive: true, force: true });
+      await rm(restartVectorStoreDir, { recursive: true, force: true });
+    }
   });
 
   it("rejects ingestion completion timestamps where completion precedes start", async () => {

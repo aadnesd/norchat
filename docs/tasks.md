@@ -109,6 +109,26 @@ Why: Browser console favicon 404 noise obscured real frontend diagnostics and wa
 Tests: `npm run build -w apps/web`.
 Implementation outcome: Added `apps/web/public/favicon.svg` and wired `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` in `apps/web/index.html`.
 
+25. CI workflows for lint/test/build and Playwright quality gates are now in place.
+Why: Automated quality gates on PR/push were missing, leaving regressions in workspace lint/test/build and onboarding UI checks unguarded.
+Tests: `npm run lint`, `npm test`, `npm run build`; workflow YAML parsed with `ruby -e "require 'yaml'; YAML.load_file('.github/workflows/ci-quality.yml')"`.
+Implementation outcome: Added `.github/workflows/ci-quality.yml` with a lint/test/build matrix using root workspace scripts, npm caching with `npm install`, and a Playwright job that installs Chromium via `npx playwright install --with-deps chromium` before `npm run e2e -w apps/web`.
+
+26. API-backed onboarding Playwright E2E now validates the full create-and-deploy flow.
+Why: Onboarding acceptance needed real API-backed assertions for tenant/agent/source/channel outcomes, not static UI smoke checks.
+Tests: `npm run e2e -w apps/web -- tests/onboarding.spec.ts`, `npm run test -w apps/web`.
+Implementation outcome: Updated `apps/web/tests/onboarding.spec.ts` to run create tenant → create agent → add snippet source → deploy channel and assert persisted API records; updated `apps/web/playwright.config.ts` to start API + web servers with a deterministic API base for the test run.
+
+27. Durable ingestion worker/queue runtime and persistence is implemented in `apps/api` for ingestion jobs, metrics, and audit state.
+Why: Ingestion and observability state must survive API restarts so queued/finished ingestion, metrics summaries, and audit trails remain durable.
+Tests: `npm run test -w apps/api`, `npm run build -w apps/api`.
+Implementation outcome: Added file-backed runtime persistence (`runtime-state.json`) with startup reload + atomic writes, wired ingestion job lifecycle updates and metric/audit mutations to durable storage, and added restart-survival coverage in `apps/api/src/__tests__/api.spec.ts`.
+
+28. Beta acceptance automation and runbook completeness are implemented.
+Why: Beta release sign-off needs a consistent, repeatable gate check for lint, tests, build, and the critical onboarding E2E path with clear operator actions.
+Tests: `npm run acceptance:beta`; workflow YAML parse (`ruby -e "require 'yaml'; YAML.load_file('.github/workflows/beta-acceptance.yml')"`).
+Implementation outcome: Added executable `scripts/beta-acceptance-check.sh`, wired root script `acceptance:beta`, added manual `Beta Acceptance` workflow, and documented release/operator runbook steps in `docs/acceptance.md`.
+
 ## Planned Tasks
 
 None currently.

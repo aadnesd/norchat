@@ -5,6 +5,7 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { z } from "zod";
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import {
   buildChatPrompt,
   buildChatResponse,
@@ -437,6 +438,86 @@ type IngestionJob = {
   completedAt?: string;
   durationMs?: number;
   slaMet?: boolean;
+};
+
+const durableRuntimeStateSchema = z.object({
+  ingestionJobs: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        sourceId: z.string().min(1),
+        kind: z.enum(["crawl", "file", "notion"]),
+        status: ingestionJobStatusSchema,
+        createdAt: z.string(),
+        startedAt: z.string().optional(),
+        completedAt: z.string().optional(),
+        durationMs: z.number().optional(),
+        slaMet: z.boolean().optional()
+      })
+    )
+    .default([]),
+  metricEvents: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        type: metricEventTypeSchema,
+        tenantId: z.string().min(1).optional(),
+        agentId: z.string().min(1).optional(),
+        channelId: z.string().min(1).optional(),
+        conversationId: z.string().min(1).optional(),
+        timestamp: z.string(),
+        value: z.number().optional(),
+        metadata: z.record(z.unknown()).optional()
+      })
+    )
+    .default([]),
+  auditEvents: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        tenantId: z.string().min(1),
+        actorId: z.string().min(1),
+        action: z.string().min(1),
+        targetId: z.string().min(1).optional(),
+        metadata: z.record(z.unknown()).optional(),
+        createdAt: z.string()
+      })
+    )
+    .default([])
+});
+
+type DurableRuntimeState = z.infer<typeof durableRuntimeStateSchema>;
+
+const emptyDurableRuntimeState = (): DurableRuntimeState => ({
+  ingestionJobs: [],
+  metricEvents: [],
+  auditEvents: []
+});
+
+const loadDurableRuntimeState = async (
+  filePath: string
+): Promise<DurableRuntimeState> => {
+  try {
+    const data = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(data) as unknown;
+    const result = durableRuntimeStateSchema.safeParse(parsed);
+    return result.success ? result.data : emptyDurableRuntimeState();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return emptyDurableRuntimeState();
+    }
+    return emptyDurableRuntimeState();
+  }
+};
+
+const persistDurableRuntimeState = async (
+  filePath: string,
+  state: DurableRuntimeState
+) => {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(state), "utf8");
+  await fs.rename(tmpPath, filePath);
 };
 
 const normalizeAllowedDomain = (domain: string) => {
@@ -1306,7 +1387,10 @@ const executeAction = (
   }
 };
 
-export const buildServer = async (options?: { vectorStoreDir?: string }) => {
+export const buildServer = async (options?: {
+  vectorStoreDir?: string;
+  runtimeStoreDir?: string;
+}) => {
   const fastify = Fastify({ logger: true });
 
   await fastify.register(cors, { origin: true });
@@ -1326,6 +1410,12 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     process.env.VECTOR_STORE_DIR ??
     path.join(process.cwd(), "data", "vector-store");
   const vectorStore = createRegionalVectorStore(vectorStoreDir);
+  const runtimeStoreDir =
+    options?.runtimeStoreDir ??
+    process.env.RUNTIME_STORE_DIR ??
+    path.join(process.cwd(), "data", "api-runtime");
+  const runtimeStatePath = path.join(runtimeStoreDir, "runtime-state.json");
+  const persistedRuntimeState = await loadDurableRuntimeState(runtimeStatePath);
 
   const tenants = new Map<string, Tenant>();
   const tenantMembers = new Map<string, TenantMember>();
@@ -1336,7 +1426,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
   const actions = new Map<string, Action>();
   const actionExecutions = new Map<string, ActionExecution>();
   const conversations = new Map<string, Conversation>();
-  const ingestionJobs = new Map<string, IngestionJob>();
+  const ingestionJobs = new Map<string, IngestionJob>(
+    persistedRuntimeState.ingestionJobs.map((job) => [job.id, job])
+  );
   const channelThreads = new Map<string, string>();
   const notionSyncState = new Map<
     string,
@@ -1361,10 +1453,14 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       chunkOverlap?: number;
     }
   >();
-  const metricEvents: MetricEvent[] = [];
   const maxMetricEvents = 5000;
-  const auditEvents: AuditEvent[] = [];
+  const metricEvents: MetricEvent[] = persistedRuntimeState.metricEvents.slice(
+    -maxMetricEvents
+  );
   const maxAuditEvents = 5000;
+  const auditEvents: AuditEvent[] = persistedRuntimeState.auditEvents.slice(
+    -maxAuditEvents
+  );
   const defaultRetentionDays = 30;
 
   const ensureMetricCapacity = () => {
@@ -1380,6 +1476,33 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     }
     auditEvents.splice(0, auditEvents.length - maxAuditEvents);
   };
+
+  let runtimePersistQueue: Promise<void> = Promise.resolve();
+
+  const queueRuntimeStatePersist = () => {
+    const snapshot: DurableRuntimeState = {
+      ingestionJobs: Array.from(ingestionJobs.values()),
+      metricEvents: [...metricEvents],
+      auditEvents: [...auditEvents]
+    };
+    runtimePersistQueue = runtimePersistQueue
+      .catch(() => undefined)
+      .then(() => persistDurableRuntimeState(runtimeStatePath, snapshot))
+      .catch((error) => {
+        fastify.log.error({ err: error }, "failed to persist runtime state");
+      });
+  };
+
+  fastify.addHook("onClose", async () => {
+    await runtimePersistQueue;
+  });
+
+  if (
+    persistedRuntimeState.metricEvents.length !== metricEvents.length ||
+    persistedRuntimeState.auditEvents.length !== auditEvents.length
+  ) {
+    queueRuntimeStatePersist();
+  }
 
   const recordAuditEvent = (input: {
     tenantId: string;
@@ -1399,6 +1522,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     auditEvents.push(event);
     ensureAuditCapacity();
+    queueRuntimeStatePersist();
     return event;
   };
 
@@ -1549,6 +1673,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     metricEvents.push(event);
     ensureMetricCapacity();
+    queueRuntimeStatePersist();
     return event;
   };
 
@@ -1574,6 +1699,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
         metricEvents.splice(index, 1);
         removedMetrics += 1;
       }
+    }
+    if (removedMetrics > 0) {
+      queueRuntimeStatePersist();
     }
     return { removedConversations: conversationIds.size, removedMetrics };
   };
@@ -3213,6 +3341,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     sources.set(sourceId, source);
     ingestionJobs.set(jobId, job);
+    queueRuntimeStatePersist();
     return reply.code(201).send({ source, job });
   });
 
@@ -3249,6 +3378,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     sources.set(sourceId, source);
     ingestionJobs.set(jobId, job);
+    queueRuntimeStatePersist();
     return reply.code(201).send({ source, job });
   });
 
@@ -3291,6 +3421,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
     };
     sources.set(sourceId, source);
     ingestionJobs.set(jobId, job);
+    queueRuntimeStatePersist();
     const autoRetrain = data.autoRetrain ?? true;
     notionSyncState.set(sourceId, {
       sourceId,
@@ -3375,6 +3506,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
       retriggered.push({ sourceId: source.id, jobId });
     }
+    if (retriggered.length > 0) {
+      queueRuntimeStatePersist();
+    }
 
     return reply.send({
       status: "retrain_triggered",
@@ -3441,6 +3575,9 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       } else {
         upToDate.push(sourceId);
       }
+    }
+    if (stale.length > 0) {
+      queueRuntimeStatePersist();
     }
 
     return reply.send({
@@ -3662,6 +3799,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       );
     }
     ingestionJobs.set(id, updatedJob);
+    queueRuntimeStatePersist();
 
     let nextStatus: Source["status"] = source.status;
     if (status === "processing") {
@@ -3794,6 +3932,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
 
     const updatedJob: IngestionJob = applyIngestionCompletion(job, createdAt);
     ingestionJobs.set(job.id, updatedJob);
+    queueRuntimeStatePersist();
 
     recordMetricEvent({
       type: "ingestion_completed",
@@ -3977,6 +4116,7 @@ export const buildServer = async (options?: { vectorStoreDir?: string }) => {
       createdAt: now
     };
     ingestionJobs.set(jobId, job);
+    queueRuntimeStatePersist();
     return { source: updated, job, deletedChunks, mode: "job" };
   });
 

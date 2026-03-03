@@ -570,9 +570,10 @@ export function App() {
           </div>
           <div className="steps">
             {steps.map((item, index) => (
-              <button
+              <Button
                 key={item.id}
                 type="button"
+                variant="ghost"
                 className={`step ${index === stepIndex ? "active" : ""}`}
                 onClick={() => setStepIndex(index)}
               >
@@ -581,7 +582,7 @@ export function App() {
                   <strong>{item.title}</strong>
                   <span>{item.description}</span>
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
           <div className="status-grid">

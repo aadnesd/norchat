@@ -171,6 +171,11 @@ p {
   background: #fef9f2;
   cursor: pointer;
   text-align: left;
+  height: auto;
+  width: 100%;
+  justify-content: flex-start;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .step.active {

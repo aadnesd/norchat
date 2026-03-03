@@ -59,3 +59,12 @@ DEC-005
 - Reasoning: Resolves the `user_required` onboarding blocker immediately with minimal surface area while preserving environment-level override control
 - Reversibility: High; this can be replaced by authenticated user context once auth is fully wired
 - Timestamp (UTC ISO 8601): 2026-03-03T19:54:12Z
+
+DEC-006
+- Decision: Replace `ts-node-dev` with `tsx watch` for `apps/api` development runtime
+- Chosen Option: Update `apps/api` `dev` script to `tsx watch src/index.ts` and remove `ts-node-dev` in favor of `tsx`
+- Confidence (0-100): 95
+- Alternatives Considered: Keep `ts-node-dev` with ESM flags, or switch to a build-then-run watch loop
+- Reasoning: `tsx` natively supports ESM TypeScript entrypoints in NodeNext projects, eliminating the loader crash with a minimal script/dependency change
+- Reversibility: High; the dev script and dependency can be swapped back quickly if needed
+- Timestamp (UTC ISO 8601): 2026-03-03T21:24:20Z

@@ -99,8 +99,16 @@ Why: Playwright onboarding step 1 failed with `user_required` because the web AP
 Tests: `npm run test -w apps/web`, `npm run build -w apps/web`; Playwright CLI re-check now advances onboarding to step 2 (remaining console error is favicon 404).
 Implementation outcome: Added user header support in `apps/web/src/api.ts`, wired `VITE_API_USER_ID` with default `user_admin` in `apps/web/src/pages/App.tsx`, and updated `apps/web/src/pages/App.test.tsx` to assert `x-user-id`.
 
+23. Gap: API dev script ESM loader mismatch is resolved in `apps/api`.
+Why: `npm run dev -w apps/api` crashed with `Must use import to load ES Module` from `ts-node-dev`, blocking local API development.
+Tests: `PORT=0 npm run dev -w apps/api` now starts and logs `Server listening`; `npm run test -w apps/api` passes.
+Implementation outcome: Switched `apps/api` dev runtime from `ts-node-dev` to `tsx watch` and replaced the corresponding dev dependency.
+
+24. Web favicon 404 is resolved in `apps/web`.
+Why: Browser console favicon 404 noise obscured real frontend diagnostics and was the remaining known onboarding console error.
+Tests: `npm run build -w apps/web`.
+Implementation outcome: Added `apps/web/public/favicon.svg` and wired `<link rel="icon" type="image/svg+xml" href="/favicon.svg" />` in `apps/web/index.html`.
+
 ## Planned Tasks
 
-1. [OPEN] Fix API dev script ESM loader mismatch in `apps/api`.
-Why: `npm run dev -w apps/api` currently fails with `Must use import to load ES Module` from `ts-node-dev`, blocking local API development.
-Tests needed: After the fix, `npm run dev -w apps/api` starts without ESM loader errors, and `npm run test -w apps/api` still passes.
+None currently.

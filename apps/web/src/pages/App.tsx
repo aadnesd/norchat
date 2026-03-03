@@ -600,9 +600,9 @@ export function App() {
           </div>
           {errorMessage && <div className="notice error">{errorMessage}</div>}
           <div className="panel-controls">
-            <button type="button" className="ghost" onClick={previousStep} disabled={stepIndex === 0}>
+            <Button type="button" variant="ghost" onClick={previousStep} disabled={stepIndex === 0}>
               Back
-            </button>
+            </Button>
             <Button type="button" onClick={handleContinue} disabled={!canContinue}>
               {continueLabel}
             </Button>

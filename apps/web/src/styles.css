@@ -201,38 +201,6 @@ p {
   gap: 12px;
 }
 
-.primary,
-.secondary,
-.ghost {
-  border: none;
-  border-radius: 999px;
-  padding: 10px 20px;
-  font-weight: 600;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.primary:disabled,
-.secondary:disabled,
-.ghost:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.primary {
-  background: var(--teal);
-  color: white;
-}
-
-.secondary {
-  background: var(--seafoam);
-  color: var(--teal);
-}
-
-.ghost {
-  background: transparent;
-  color: var(--muted);
-}
 
 .form-grid {
   display: grid;

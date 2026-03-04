@@ -520,6 +520,31 @@ const persistDurableRuntimeState = async (
   await fs.rename(tmpPath, filePath);
 };
 
+type RuntimePersistRetryOptions = {
+  maxRetries?: number;
+  backoffMs?: number;
+  maxBackoffMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+type BuildServerOptions = {
+  vectorStoreDir?: string;
+  runtimeStoreDir?: string;
+  runtimeStatePersister?: (
+    filePath: string,
+    state: DurableRuntimeState
+  ) => Promise<void>;
+  runtimePersistRetry?: RuntimePersistRetryOptions;
+};
+
+const resolveNonNegativeInt = (value: number | string | undefined, fallback: number) => {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+};
+
 const normalizeAllowedDomain = (domain: string) => {
   const trimmed = domain.trim().toLowerCase();
   if (!trimmed) {
@@ -1387,10 +1412,7 @@ const executeAction = (
   }
 };
 
-export const buildServer = async (options?: {
-  vectorStoreDir?: string;
-  runtimeStoreDir?: string;
-}) => {
+export const buildServer = async (options?: BuildServerOptions) => {
   const fastify = Fastify({ logger: true });
 
   await fastify.register(cors, { origin: true });
@@ -1415,6 +1437,34 @@ export const buildServer = async (options?: {
     process.env.RUNTIME_STORE_DIR ??
     path.join(process.cwd(), "data", "api-runtime");
   const runtimeStatePath = path.join(runtimeStoreDir, "runtime-state.json");
+  const runtimeStatePersister =
+    options?.runtimeStatePersister ?? persistDurableRuntimeState;
+  const runtimePersistMaxRetries = resolveNonNegativeInt(
+    options?.runtimePersistRetry?.maxRetries ?? process.env.RUNTIME_PERSIST_MAX_RETRIES,
+    3
+  );
+  const runtimePersistBackoffMs = resolveNonNegativeInt(
+    options?.runtimePersistRetry?.backoffMs ?? process.env.RUNTIME_PERSIST_BACKOFF_MS,
+    100
+  );
+  const runtimePersistMaxBackoffMs = Math.max(
+    runtimePersistBackoffMs,
+    resolveNonNegativeInt(
+      options?.runtimePersistRetry?.maxBackoffMs ??
+        process.env.RUNTIME_PERSIST_BACKOFF_MAX_MS,
+      1000
+    )
+  );
+  const runtimePersistSleep =
+    options?.runtimePersistRetry?.sleep ??
+    (async (delayMs: number) => {
+      if (delayMs <= 0) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs);
+      });
+    });
   const persistedRuntimeState = await loadDurableRuntimeState(runtimeStatePath);
 
   const tenants = new Map<string, Tenant>();
@@ -1479,6 +1529,37 @@ export const buildServer = async (options?: {
 
   let runtimePersistQueue: Promise<void> = Promise.resolve();
 
+  const persistRuntimeStateWithRetry = async (snapshot: DurableRuntimeState) => {
+    for (
+      let retryAttempt = 0;
+      retryAttempt <= runtimePersistMaxRetries;
+      retryAttempt += 1
+    ) {
+      try {
+        await runtimeStatePersister(runtimeStatePath, snapshot);
+        return;
+      } catch (error) {
+        if (retryAttempt === runtimePersistMaxRetries) {
+          throw error;
+        }
+        const delayMs = Math.min(
+          runtimePersistBackoffMs * 2 ** retryAttempt,
+          runtimePersistMaxBackoffMs
+        );
+        fastify.log.warn(
+          {
+            err: error,
+            retryAttempt: retryAttempt + 1,
+            maxRetries: runtimePersistMaxRetries,
+            delayMs
+          },
+          "retrying runtime state persistence"
+        );
+        await runtimePersistSleep(delayMs);
+      }
+    }
+  };
+
   const queueRuntimeStatePersist = () => {
     const snapshot: DurableRuntimeState = {
       ingestionJobs: Array.from(ingestionJobs.values()),
@@ -1487,9 +1568,15 @@ export const buildServer = async (options?: {
     };
     runtimePersistQueue = runtimePersistQueue
       .catch(() => undefined)
-      .then(() => persistDurableRuntimeState(runtimeStatePath, snapshot))
+      .then(() => persistRuntimeStateWithRetry(snapshot))
       .catch((error) => {
-        fastify.log.error({ err: error }, "failed to persist runtime state");
+        fastify.log.error(
+          {
+            err: error,
+            attempts: runtimePersistMaxRetries + 1
+          },
+          "failed to persist runtime state after retries"
+        );
       });
   };
 

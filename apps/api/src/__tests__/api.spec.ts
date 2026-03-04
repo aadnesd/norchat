@@ -1,5 +1,6 @@
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -612,6 +613,137 @@ describe("api routes", () => {
       }
       await rm(restartRuntimeStoreDir, { recursive: true, force: true });
       await rm(restartVectorStoreDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries runtime-state persistence on transient write failures", async () => {
+    const retryVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-retry-")
+    );
+    const retryRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-retry-")
+    );
+    const runtimeStateFile = path.join(retryRuntimeStoreDir, "runtime-state.json");
+    let transientFailures = 0;
+
+    let retryServer: FastifyInstance | undefined;
+    try {
+      retryServer = await buildServer({
+        vectorStoreDir: retryVectorStoreDir,
+        runtimeStoreDir: retryRuntimeStoreDir,
+        runtimeStatePersister: async (filePath, state) => {
+          if (transientFailures < 1) {
+            transientFailures += 1;
+            const error = new Error(
+              "transient runtime persistence failure"
+            ) as NodeJS.ErrnoException;
+            error.code = "EIO";
+            throw error;
+          }
+          await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
+          await fsPromises.writeFile(filePath, JSON.stringify(state), "utf8");
+        },
+        runtimePersistRetry: {
+          maxRetries: 2,
+          backoffMs: 1,
+          maxBackoffMs: 1,
+          sleep: async () => undefined
+        }
+      });
+      await retryServer.ready();
+
+      const tenantResponse = await retryServer.inject({
+        method: "POST",
+        url: "/tenants",
+        headers: {
+          "x-user-id": "user_retry_owner"
+        },
+        payload: {
+          name: "Retry Tenant",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+
+      await retryServer.close();
+      retryServer = undefined;
+
+      const persisted = JSON.parse(
+        await readFile(runtimeStateFile, "utf8")
+      ) as { auditEvents: Array<{ action: string }> };
+      expect(
+        persisted.auditEvents.some((event) => event.action === "tenant.created")
+      ).toBe(true);
+      expect(transientFailures).toBe(1);
+    } finally {
+      if (retryServer) {
+        await retryServer.close();
+      }
+      await rm(retryRuntimeStoreDir, { recursive: true, force: true });
+      await rm(retryVectorStoreDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops runtime-state persistence retries after configured max attempts", async () => {
+    const retryVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-retry-max-")
+    );
+    const retryRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-retry-max-")
+    );
+    let persistedWriteAttempts = 0;
+    const backoffDelays: number[] = [];
+
+    let retryServer: FastifyInstance | undefined;
+    try {
+      retryServer = await buildServer({
+        vectorStoreDir: retryVectorStoreDir,
+        runtimeStoreDir: retryRuntimeStoreDir,
+        runtimeStatePersister: async () => {
+          persistedWriteAttempts += 1;
+          const error = new Error(
+            "persistent runtime persistence failure"
+          ) as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        },
+        runtimePersistRetry: {
+          maxRetries: 2,
+          backoffMs: 5,
+          maxBackoffMs: 5,
+          sleep: async (ms) => {
+            backoffDelays.push(ms);
+          }
+        }
+      });
+      await retryServer.ready();
+      const errorSpy = vi.spyOn(retryServer.log, "error");
+
+      const tenantResponse = await retryServer.inject({
+        method: "POST",
+        url: "/tenants",
+        headers: {
+          "x-user-id": "user_retry_max_owner"
+        },
+        payload: {
+          name: "Retry Max Tenant",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+
+      await retryServer.close();
+      retryServer = undefined;
+
+      expect(persistedWriteAttempts).toBe(3);
+      expect(backoffDelays).toEqual([5, 5]);
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      if (retryServer) {
+        await retryServer.close();
+      }
+      await rm(retryRuntimeStoreDir, { recursive: true, force: true });
+      await rm(retryVectorStoreDir, { recursive: true, force: true });
     }
   });
 

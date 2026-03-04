@@ -129,6 +129,13 @@ Why: Beta release sign-off needs a consistent, repeatable gate check for lint, t
 Tests: `npm run acceptance:beta`; workflow YAML parse (`ruby -e "require 'yaml'; YAML.load_file('.github/workflows/beta-acceptance.yml')"`).
 Implementation outcome: Added executable `scripts/beta-acceptance-check.sh`, wired root script `acceptance:beta`, added manual `Beta Acceptance` workflow, and documented release/operator runbook steps in `docs/acceptance.md`.
 
+29. Runtime persistence retry/backoff is implemented for durable runtime-state writes.
+Why: Transient filesystem write failures can create non-durable state windows unless persistence retries are bounded and automatic.
+Tests: `npm run test -w apps/api`, `npm run build -w apps/api`.
+Implementation outcome: Runtime-state file writes now use bounded retry/backoff on transient failures before surfacing hard persistence errors.
+
 ## Planned Tasks
 
-None currently.
+1. `runtime-persistence-observability` (priority 3).
+2. `runtime-state-capacity-config` (priority 4).
+Why/Tests: These items prioritize runtime durability and operability, with tests focused on persistence observability and capacity configuration coverage.

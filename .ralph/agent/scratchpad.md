@@ -13,3 +13,10 @@
   - runtime persistence observability (queue depth/latency/failure counters),
   - configurable runtime state capacity caps,
   - bounded retry/backoff for persistence writes.
+
+2026-03-04T09:38:30Z
+- Picked highest-priority open runtime durability gap: `runtime-persistence-retry-backoff`.
+- Implemented bounded runtime-state persistence retry/backoff in `apps/api/src/index.ts` with configurable retries/backoff and test hooks.
+- Added RED→GREEN coverage in `apps/api/src/__tests__/api.spec.ts` for transient recovery and bounded max-attempt behavior.
+- Updated tracking/docs: `docs/tasks.md`, `.ralph/agent/tasks.jsonl` (task closed), and `README.md` runtime persistence env notes.
+- Validation: `npm run lint && npm test && npm run build` passed.

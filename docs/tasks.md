@@ -134,8 +134,12 @@ Why: Transient filesystem write failures can create non-durable state windows un
 Tests: `npm run test -w apps/api`, `npm run build -w apps/api`.
 Implementation outcome: Runtime-state file writes now use bounded retry/backoff on transient failures before surfacing hard persistence errors.
 
+30. Runtime persistence observability is implemented for durable runtime-state operations.
+Why: Persistence reliability needs operational visibility so queue depth, write latency, and repeated failures are detectable in production diagnostics.
+Tests: `npm run test -w apps/api`, `npm run build`.
+Implementation outcome: Runtime-state persistence now emits observability signals for queue depth, write latency, and repeated failure counts to improve troubleshooting.
+
 ## Planned Tasks
 
-1. `runtime-persistence-observability` (priority 3).
-2. `runtime-state-capacity-config` (priority 4).
-Why/Tests: These items prioritize runtime durability and operability, with tests focused on persistence observability and capacity configuration coverage.
+1. `runtime-state-capacity-config` (priority 4).
+Why/Tests: Remaining work prioritizes runtime operability, with tests focused on capacity configuration coverage.

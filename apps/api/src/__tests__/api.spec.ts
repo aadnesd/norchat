@@ -747,6 +747,230 @@ describe("api routes", () => {
     }
   });
 
+  it("reports runtime persistence diagnostics for retry recovery", async () => {
+    const retryVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-retry-diagnostics-")
+    );
+    const retryRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-retry-diagnostics-")
+    );
+    let transientFailures = 0;
+
+    let retryServer: FastifyInstance | undefined;
+    try {
+      retryServer = await buildServer({
+        vectorStoreDir: retryVectorStoreDir,
+        runtimeStoreDir: retryRuntimeStoreDir,
+        runtimeStatePersister: async (filePath, state) => {
+          if (transientFailures < 1) {
+            transientFailures += 1;
+            const error = new Error(
+              "transient runtime persistence failure"
+            ) as NodeJS.ErrnoException;
+            error.code = "EIO";
+            throw error;
+          }
+          await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
+          await fsPromises.writeFile(filePath, JSON.stringify(state), "utf8");
+        },
+        runtimePersistRetry: {
+          maxRetries: 2,
+          backoffMs: 1,
+          maxBackoffMs: 1,
+          sleep: async () => undefined
+        }
+      });
+      await retryServer.ready();
+
+      const tenantResponse = await retryServer.inject({
+        method: "POST",
+        url: "/tenants",
+        headers: {
+          "x-user-id": "user_retry_observability_owner"
+        },
+        payload: {
+          name: "Retry Observability Tenant",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+
+      let diagnosticsResponse = await retryServer.inject({
+        method: "GET",
+        url: "/diagnostics/persistence",
+        headers: {
+          "x-user-id": "user_retry_observability_owner"
+        }
+      });
+      expect(diagnosticsResponse.statusCode).toBe(200);
+
+      let diagnostics = diagnosticsResponse.json() as {
+        queueDepth: number;
+        peakQueueDepth: number;
+        totals: {
+          persistedSnapshots: number;
+          writeAttempts: number;
+          retryAttempts: number;
+          failedAttempts: number;
+          failedSnapshots: number;
+        };
+        latencyMs: {
+          last: number | null;
+          average: number | null;
+        };
+        lastFailure: {
+          at: string;
+          message: string;
+        } | null;
+      };
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (
+          diagnostics.queueDepth === 0 &&
+          diagnostics.totals.writeAttempts >= 2 &&
+          diagnostics.totals.persistedSnapshots >= 1
+        ) {
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        diagnosticsResponse = await retryServer.inject({
+          method: "GET",
+          url: "/diagnostics/persistence",
+          headers: {
+            "x-user-id": "user_retry_observability_owner"
+          }
+        });
+        diagnostics = diagnosticsResponse.json();
+      }
+
+      expect(diagnostics.queueDepth).toBe(0);
+      expect(diagnostics.peakQueueDepth).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.totals.writeAttempts).toBe(2);
+      expect(diagnostics.totals.retryAttempts).toBe(1);
+      expect(diagnostics.totals.failedAttempts).toBe(1);
+      expect(diagnostics.totals.failedSnapshots).toBe(0);
+      expect(diagnostics.totals.persistedSnapshots).toBeGreaterThanOrEqual(1);
+      expect(diagnostics.latencyMs.last).toBeGreaterThanOrEqual(0);
+      expect(diagnostics.latencyMs.average).toBeGreaterThanOrEqual(0);
+      expect(diagnostics.lastFailure).toBeNull();
+      expect(transientFailures).toBe(1);
+    } finally {
+      if (retryServer) {
+        await retryServer.close();
+      }
+      await rm(retryRuntimeStoreDir, { recursive: true, force: true });
+      await rm(retryVectorStoreDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports runtime persistence diagnostics for exhausted retries", async () => {
+    const retryVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-retry-diagnostics-max-")
+    );
+    const retryRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-retry-diagnostics-max-")
+    );
+    let persistedWriteAttempts = 0;
+
+    let retryServer: FastifyInstance | undefined;
+    try {
+      retryServer = await buildServer({
+        vectorStoreDir: retryVectorStoreDir,
+        runtimeStoreDir: retryRuntimeStoreDir,
+        runtimeStatePersister: async () => {
+          persistedWriteAttempts += 1;
+          const error = new Error(
+            "persistent runtime persistence failure"
+          ) as NodeJS.ErrnoException;
+          error.code = "EIO";
+          throw error;
+        },
+        runtimePersistRetry: {
+          maxRetries: 2,
+          backoffMs: 1,
+          maxBackoffMs: 1,
+          sleep: async () => undefined
+        }
+      });
+      await retryServer.ready();
+      const errorSpy = vi.spyOn(retryServer.log, "error");
+
+      const tenantResponse = await retryServer.inject({
+        method: "POST",
+        url: "/tenants",
+        headers: {
+          "x-user-id": "user_retry_observability_max_owner"
+        },
+        payload: {
+          name: "Retry Observability Max Tenant",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+
+      let diagnosticsResponse = await retryServer.inject({
+        method: "GET",
+        url: "/diagnostics/persistence",
+        headers: {
+          "x-user-id": "user_retry_observability_max_owner"
+        }
+      });
+      expect(diagnosticsResponse.statusCode).toBe(200);
+
+      let diagnostics = diagnosticsResponse.json() as {
+        queueDepth: number;
+        totals: {
+          writeAttempts: number;
+          retryAttempts: number;
+          failedAttempts: number;
+          failedSnapshots: number;
+          persistedSnapshots: number;
+        };
+        lastFailure: {
+          at: string;
+          message: string;
+        } | null;
+      };
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (
+          diagnostics.queueDepth === 0 &&
+          diagnostics.totals.failedSnapshots >= 1 &&
+          diagnostics.totals.writeAttempts >= 3
+        ) {
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        diagnosticsResponse = await retryServer.inject({
+          method: "GET",
+          url: "/diagnostics/persistence",
+          headers: {
+            "x-user-id": "user_retry_observability_max_owner"
+          }
+        });
+        diagnostics = diagnosticsResponse.json();
+      }
+
+      expect(diagnostics.queueDepth).toBe(0);
+      expect(diagnostics.totals.writeAttempts).toBe(3);
+      expect(diagnostics.totals.retryAttempts).toBe(2);
+      expect(diagnostics.totals.failedAttempts).toBe(3);
+      expect(diagnostics.totals.failedSnapshots).toBe(1);
+      expect(diagnostics.totals.persistedSnapshots).toBe(0);
+      expect(diagnostics.lastFailure?.message).toContain(
+        "persistent runtime persistence failure"
+      );
+      expect(persistedWriteAttempts).toBe(3);
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      if (retryServer) {
+        await retryServer.close();
+      }
+      await rm(retryRuntimeStoreDir, { recursive: true, force: true });
+      await rm(retryVectorStoreDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects ingestion completion timestamps where completion precedes start", async () => {
     const tenantResponse = await adminInject({
       method: "POST",

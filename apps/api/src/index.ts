@@ -527,6 +527,20 @@ type RuntimePersistRetryOptions = {
   sleep?: (ms: number) => Promise<void>;
 };
 
+type RuntimePersistenceObservability = {
+  queueDepth: number;
+  peakQueueDepth: number;
+  writeAttempts: number;
+  retryAttempts: number;
+  failedAttempts: number;
+  failedSnapshots: number;
+  persistedSnapshots: number;
+  lastWriteLatencyMs: number | null;
+  totalWriteLatencyMs: number;
+  lastFailureAt?: string;
+  lastFailureMessage?: string;
+};
+
 type BuildServerOptions = {
   vectorStoreDir?: string;
   runtimeStoreDir?: string;
@@ -1528,18 +1542,43 @@ export const buildServer = async (options?: BuildServerOptions) => {
   };
 
   let runtimePersistQueue: Promise<void> = Promise.resolve();
+  const runtimePersistenceObservability: RuntimePersistenceObservability = {
+    queueDepth: 0,
+    peakQueueDepth: 0,
+    writeAttempts: 0,
+    retryAttempts: 0,
+    failedAttempts: 0,
+    failedSnapshots: 0,
+    persistedSnapshots: 0,
+    lastWriteLatencyMs: null,
+    totalWriteLatencyMs: 0
+  };
 
   const persistRuntimeStateWithRetry = async (snapshot: DurableRuntimeState) => {
+    const writeStartedAt = Date.now();
     for (
       let retryAttempt = 0;
       retryAttempt <= runtimePersistMaxRetries;
       retryAttempt += 1
     ) {
+      runtimePersistenceObservability.writeAttempts += 1;
+      if (retryAttempt > 0) {
+        runtimePersistenceObservability.retryAttempts += 1;
+      }
       try {
         await runtimeStatePersister(runtimeStatePath, snapshot);
+        const writeLatencyMs = Date.now() - writeStartedAt;
+        runtimePersistenceObservability.lastWriteLatencyMs = writeLatencyMs;
+        runtimePersistenceObservability.totalWriteLatencyMs += writeLatencyMs;
+        runtimePersistenceObservability.persistedSnapshots += 1;
         return;
       } catch (error) {
+        runtimePersistenceObservability.failedAttempts += 1;
         if (retryAttempt === runtimePersistMaxRetries) {
+          runtimePersistenceObservability.failedSnapshots += 1;
+          runtimePersistenceObservability.lastFailureAt = new Date().toISOString();
+          runtimePersistenceObservability.lastFailureMessage =
+            error instanceof Error ? error.message : String(error);
           throw error;
         }
         const delayMs = Math.min(
@@ -1561,6 +1600,11 @@ export const buildServer = async (options?: BuildServerOptions) => {
   };
 
   const queueRuntimeStatePersist = () => {
+    runtimePersistenceObservability.queueDepth += 1;
+    runtimePersistenceObservability.peakQueueDepth = Math.max(
+      runtimePersistenceObservability.peakQueueDepth,
+      runtimePersistenceObservability.queueDepth
+    );
     const snapshot: DurableRuntimeState = {
       ingestionJobs: Array.from(ingestionJobs.values()),
       metricEvents: [...metricEvents],
@@ -1576,6 +1620,12 @@ export const buildServer = async (options?: BuildServerOptions) => {
             attempts: runtimePersistMaxRetries + 1
           },
           "failed to persist runtime state after retries"
+        );
+      })
+      .finally(() => {
+        runtimePersistenceObservability.queueDepth = Math.max(
+          0,
+          runtimePersistenceObservability.queueDepth - 1
         );
       });
   };
@@ -3367,6 +3417,41 @@ export const buildServer = async (options?: BuildServerOptions) => {
     const limit = query.limit ?? 50;
     const offset = query.offset ?? 0;
     return { items: summaries.slice(offset, offset + limit) };
+  });
+
+  fastify.get("/diagnostics/persistence", async (request, reply) => {
+    const userId = requireUserId(request, reply);
+    if (!userId) {
+      return reply;
+    }
+    const averageLatencyMs =
+      runtimePersistenceObservability.persistedSnapshots > 0
+        ? runtimePersistenceObservability.totalWriteLatencyMs /
+          runtimePersistenceObservability.persistedSnapshots
+        : null;
+    return {
+      queueDepth: runtimePersistenceObservability.queueDepth,
+      peakQueueDepth: runtimePersistenceObservability.peakQueueDepth,
+      totals: {
+        persistedSnapshots: runtimePersistenceObservability.persistedSnapshots,
+        writeAttempts: runtimePersistenceObservability.writeAttempts,
+        retryAttempts: runtimePersistenceObservability.retryAttempts,
+        failedAttempts: runtimePersistenceObservability.failedAttempts,
+        failedSnapshots: runtimePersistenceObservability.failedSnapshots
+      },
+      latencyMs: {
+        last: runtimePersistenceObservability.lastWriteLatencyMs,
+        average: averageLatencyMs
+      },
+      lastFailure:
+        runtimePersistenceObservability.lastFailureAt &&
+        runtimePersistenceObservability.lastFailureMessage
+          ? {
+              at: runtimePersistenceObservability.lastFailureAt,
+              message: runtimePersistenceObservability.lastFailureMessage
+            }
+          : null
+    };
   });
 
   fastify.post("/sources", async (request, reply) => {

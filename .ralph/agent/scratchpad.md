@@ -20,3 +20,9 @@
 - Added RED→GREEN coverage in `apps/api/src/__tests__/api.spec.ts` for transient recovery and bounded max-attempt behavior.
 - Updated tracking/docs: `docs/tasks.md`, `.ralph/agent/tasks.jsonl` (task closed), and `README.md` runtime persistence env notes.
 - Validation: `npm run lint && npm test && npm run build` passed.
+
+2026-03-04T09:54:16Z
+- Selected task: `runtime-persistence-observability` (priority 3).
+- Implemented runtime-state persistence observability for queue depth, write latency, and repeated failure counts.
+- Updated tracking/docs: added completed item 30 in `docs/tasks.md`, removed the task from planned items, and marked it closed in `.ralph/agent/tasks.jsonl`.
+- Validation: `npm run test -w apps/api`; `npm run build`.

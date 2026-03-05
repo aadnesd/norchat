@@ -30,6 +30,45 @@ Enable the `schedule` trigger in `.github/workflows/squad-heartbeat.yml` with a 
 - Kept existing `issues`, `pull_request`, and `workflow_dispatch` triggers unchanged
 - Did not modify triage routing logic or label policy
 
+### GitHub Issue Backlog Sync
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Sync open tasks from `.ralph/agent/tasks.jsonl` to GitHub issues and establish automated backlog linkage.
+
+**Why:** Centralize squad work in GitHub for transparency and automation; enable Ralph heartbeat to triage issues sourced from Ralph task backlog.
+
+**Scope:**
+- Synced open task `runtime-state-capacity-config` to GitHub issue #1
+- Task: Make runtime state caps configurable (priority 4, low)
+- Issue includes task ID, description, priority, and creation timestamp
+- No duplicates detected; backlog now synchronized
+
+**Impact:**
+- Squad tasks now have corresponding GitHub issues for community awareness
+- Enables task/issue linkage and cross-tool triage automation
+- One open task currently in backlog; all others closed
+
+### Squad Label Bootstrap
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Create dedicated `squad` label in the GitHub repo and apply it to squad-sourced issues.
+
+**Why:** The squad heartbeat and triage workflows need a reliable label signal to identify which issues originated from squad task sync vs. traditional GitHub issue creation. Without this namespace, squad-sourced work is indistinguishable from ad-hoc GitHub issues, making automation policy harder to enforce.
+
+**Scope:**
+- Created `squad` label in `aadnesd/norchat` with description "Squad automation and team triage" and color #6f42c1
+- Applied label to issue #1 (the squad task sync source)
+- This establishes the first explicit squad label namespace in the repo
+
+**Impact:**
+- **Triage automation:** Ralph and squad heartbeat can now filter issues by `squad` label to apply team-specific routing rules
+- **Team visibility:** Issues marked with `squad` are clearly sourced from squad task backlog, not ad-hoc GitHub
+- **Reversibility:** Label is additive; can be removed without breaking existing triage logic
+
 ## Governance
 
 - All meaningful changes require team consensus

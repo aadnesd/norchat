@@ -17,3 +17,5 @@
 - User preference reinforced again: implement minimal operational toggles first (enable cron) before wider workflow rewrites.
 - Key paths for squad triage automation: `.github/workflows/squad-heartbeat.yml`, `.github/workflows/squad-triage.yml`, `.squad/team.md`.
 - Ralph heartbeat cron enabled (2026-03-05): 30-minute schedule active for automatic untriaged issue discovery and routing.
+- Task-to-issue sync (2026-03-05): Synced 1 open task (`runtime-state-capacity-config`) to GitHub issue backlog. Pattern: match task ID/title, avoid duplicates, include task metadata (ID, priority, created date) in issue body. Note: `squad` label unavailable in repo; existing labels (bug, enhancement, etc.) should be reserved for traditional triage. Consider creating `squad` label if planning cross-repo label consistency.
+- Squad label bootstrap (2026-03-05): Created `squad` label in repo (purple #6f42c1, description: "Squad automation and team triage") and applied to issue #1. Enables explicit marking of squad-sourced work for heartbeat/triage automation. This is a team-level behavior change (first explicit squad label namespace in repo).

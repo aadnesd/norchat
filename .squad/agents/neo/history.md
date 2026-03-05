@@ -8,3 +8,5 @@
 ## Learnings
 
 - Neo initialized to own API and core service implementation in `apps/api`.
+- Neo-relevant backlog (2026-03-05): P1 worker queue processor, P1 analytics endpoint, P2 rate limiting, P2 email connector webhooks, P2 shared logging library. All documented in decisions.md.
+

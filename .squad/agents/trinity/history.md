@@ -8,3 +8,5 @@
 ## Learnings
 
 - Trinity initialized to own onboarding and UI delivery in `apps/web`.
+- Trinity-relevant backlog (2026-03-05): P1 analytics dashboard UI, P1 admin console agent config form, P2 shared logging library (client error boundary). All documented in decisions.md.
+

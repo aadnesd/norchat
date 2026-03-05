@@ -69,6 +69,159 @@ Create dedicated `squad` label in the GitHub repo and apply it to squad-sourced 
 - **Team visibility:** Issues marked with `squad` are clearly sourced from squad task backlog, not ad-hoc GitHub
 - **Reversibility:** Label is additive; can be removed without breaking existing triage logic
 
+### Worker Queue Runtime & Async Job Processing
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Build the worker as a proper job queue consumer that picks up ingestion/retrain/action tasks from a durable work queue.
+
+**Key Points:**
+- Worker reads job queue from shared runtime state (file or Redis stub)
+- Processes one job at a time with configurable concurrency (default: 1)
+- Updates job status (queued → processing → done/failed) in persistent store
+- Implements exponential backoff on transient failures; hard fails after max retries
+- Logs job lifecycle to observability endpoint
+- Reachable via `npm run dev -w apps/worker` with test coverage
+
+**Owner:** Backend Lead  
+**Priority:** P1 (blocks ingestion SLA enforcement and async action execution)
+
+---
+
+### Analytics & Observability Dashboard
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Add analytics endpoint and dashboard UI for conversations, deflection, and agent quality metrics.
+
+**Key Points:**
+- API `/analytics/metrics` endpoint with aggregated counts + percentiles
+- Dashboard UI tab with line chart (conversations/day), histogram (confidence), heatmap (escalation by agent)
+- Metrics computed from durable audit/metrics state (no real-time DB required)
+- Filters for agent, date range, source type
+- Endpoint requires `x-user-id` and respects tenant isolation
+
+**Owner:** Full-stack Engineer  
+**Priority:** P1 (required for operator visibility into bot performance and compliance)
+
+---
+
+### Admin Console: Agent Configuration & Prompt Management
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Build admin UI for managing agent base prompts, model selection, and retrieval parameters.
+
+**Key Points:**
+- `/admin/agents/:agentId/edit` page with form for agent metadata + retrieval config
+- POST `/agents/:agentId` accepts `model`, `basePrompt`, `retrievalConfig` fields
+- Form includes preview of how prompt template will render with sample context
+- Changes persist immediately; API validates field types and ranges
+- Success/error toast notifications
+- Page requires write permission
+
+**Owner:** Full-stack Engineer  
+**Priority:** P1 (blocks ops from tuning agent behavior post-launch)
+
+---
+
+### Load Testing & Performance Benchmarks
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Define and measure ingestion/chat latency and throughput SLOs.
+
+**Key Points:**
+- Load test script in `scripts/load-test.ts` spawns N concurrent chat clients and M concurrent ingestion jobs
+- Generates report with p50/p90/p99 latency, throughput (req/s), and error rate
+- Baseline SLOs documented in `docs/performance.md` (e.g., chat <200ms p99, ingestion <5min)
+- CI includes optional manual load test run (not on every commit)
+
+**Owner:** Infra/Performance Engineer  
+**Priority:** P2 (important for pre-release validation; can defer if beta is smaller scale)
+
+---
+
+### Multi-Tenant Rate Limiting & Quota Enforcement
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Implement token-bucket rate limiting per tenant with usage quota tracking.
+
+**Key Points:**
+- API middleware enforces rate limit (X req/sec per tenant, configurable)
+- Quota tracking stored in runtime state; queryable via `/diagnostics/quota/:tenantId`
+- Endpoints return `X-RateLimit-*` headers
+- 429 response when tenant hits rate limit or monthly quota
+- Admin endpoint to override/reset quota for a tenant
+
+**Owner:** Backend Lead  
+**Priority:** P2 (required for multi-customer fairness; can start with simple hard limits)
+
+---
+
+### Email Connector Webhook Implementation & Message Routing
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Complete email connector inbound webhook and message routing.
+
+**Key Points:**
+- `POST /webhooks/email` accepts inbound message payload
+- Route to conversation by ticket ID or email thread; create new conversation if no match
+- Support email-to-SMS escalation
+- Webhook signature verification (HMAC per provider)
+- Tests cover happy path, missing thread, and invalid signature
+
+**Owner:** Backend Lead  
+**Priority:** P2 (high-value integr; add after core multi-channel connectors stabilize)
+
+---
+
+### Shared Logging & Error Handling Library
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Build shared logging and error-handling utilities for consistent observability.
+
+**Key Points:**
+- Logger factory supports JSON output with trace ID, tenant ID, user ID context
+- Error class with `code`, `statusCode`, `message` fields; supports chaining
+- API middleware auto-logs requests with trace ID, request/response size, and latency
+- Worker jobs log start/finish with job ID and duration
+- Web client includes error boundary that captures stack traces
+
+**Owner:** Backend Lead  
+**Priority:** P2 (improves observability; can be done incrementally)
+
+---
+
+### Deployment Guide & Production Runbook
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Document deployment architecture, environment config, and operational runbook for production.
+
+**Key Points:**
+- Covers local (npm run dev), staging (Docker Compose), and production setups
+- Environment variables documented with safe defaults
+- Includes health check endpoints and monitoring queries
+- Runbook covers graceful shutdown, job draining, rollback procedures
+- CI/CD section outlines beta acceptance and promotion to prod
+
+**Owner:** Infra/Ops  
+**Priority:** P2 (essential before any external deployment)
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

@@ -2,6 +2,30 @@
 
 ## Active Decisions
 
+### Sprint Planning Backlog (2026-03-05)
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Adopt a focused sprint backlog of **6 total open issues** (1 existing + 5 newly created), with emphasis on production readiness and cross-surface coverage (API, worker, web, shared, QA).
+
+**Backlog:**
+1. **#2** Worker runtime: implement durable async job queue processing — **P1** — Owner: Backend
+2. **#3** API hardening: enforce per-tenant rate limiting and quotas — **P1** — Owner: Backend
+3. **#4** Admin console: post-onboarding agent settings (prompt/model/retrieval) — **P1** — Owner: Frontend
+4. **#5** Shared package: structured logging + typed error utilities — **P2** — Owner: Lead
+5. **#6** QA: add load/performance benchmark suite with SLO reporting — **P2** — Owner: Tester
+6. **#1** Make runtime state caps configurable — **P3** — Owner: Backend (existing)
+
+**Sequencing:**
+- Phase 1 (P1): #2 → #3 → #4
+- Phase 2 (P2): #5 → #6
+- Phase 3 (P3): #1
+
+**Rationale:** Worker async execution (#2) unlocks reliable ingestion/retrain scaling. Tenant governance (#3) and operator controls (#4) are highest impact for production. Observability (#5) and SLO validation (#6) harden platform for beta-to-prod.
+
+---
+
 ### Worker Workspace Scaffold
 
 **Date:** 2026-03-05  

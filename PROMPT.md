@@ -36,6 +36,4 @@ Build a Norway-first AI support agent platform competing with Chatbase, optimize
 10) Add GDPR controls (deletion, retention), RBAC, audit logging.
 11) Add Playwright visual tests for onboarding, widget, help page.
 
-# Suggested Commands
-- Full pipeline: ralph run --config presets/pdd-to-code-assist.yml
-- Simpler flow: ralph run --config presets/spec-driven.yml
+

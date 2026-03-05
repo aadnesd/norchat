@@ -63,6 +63,7 @@ npm run e2e -w apps/web -- --update-snapshots
 ## Repo Layout
 
 - `apps/api` - Fastify API service (tenants, agents, sources, chat)
+- `apps/worker` - Background worker runtime (queue heartbeat + polling loop scaffold)
 - `apps/web` - React + Vite web app (onboarding flow UI)
 - `packages/shared` - Shared types and utilities
 - `docs` - Implementation plan and task breakdown

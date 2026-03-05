@@ -4,3 +4,11 @@ dist
 .DS_Store
 test-results
 playwright-report
+
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Squad: ignore generated logs
+.squad/orchestration-log/
+.squad/log/

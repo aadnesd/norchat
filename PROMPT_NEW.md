@@ -4,7 +4,7 @@
 
   0b. The source code lives in apps/api/, apps/web/, and packages/shared/.
 
-  0c. Study PROMPT.md, docs/tasks.md, .ralph/agent/handoff.md, and .ralph/agent/scratchpad.md for current project intent and progress. If you’re lost, check .ralph/agent/
+  0c. Study PROMPT.md, docs/tasks.md, .ralph/agent/tasks.jsonl .ralph/agent/handoff.md, and .ralph/agent/scratchpad.md for current project intent and progress. If you’re lost, check .ralph/agent/
   tasks.jsonl.
 
   1. Your task is to implement missing functionality to ship a world‑class Norway‑first AI support agent platform (Chatbase competitor). Follow docs/tasks.md and pick the
@@ -22,6 +22,7 @@
   8. You may add extra logging if required to debug issues.
   9. ALWAYS KEEP .ralph/agent/tasks.jsonl and docs/tasks.md up to date with your learnings using a subagent, especially after wrapping up your turn.
   10. When you learn something new about how to run the app or tests, update README.md briefly using a subagent.
+  11. ALWAYS update .ralph/agent/scratchpad.md after completing an iteration.
 
   9999999999. IMPORTANT: Do not introduce placeholder or toy implementations. Build real features with correct logic and tests.
 

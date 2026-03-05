@@ -6,6 +6,10 @@
 
 ## Fixes
 
+### mem-1772562837-77b2
+> failure: cmd=read /Users/adne.skjelbreid.djuve/Documents/Codeprojects/chatbase/.ralph/agent/scratchpad.md, exit=tool_error, error=File not found, next=create scratchpad file before read
+<!-- tags: tooling, error-handling | created: 2026-03-03 -->
+
 ### mem-1772474416-6877
 > failure: cmd=ralph tools memory add "8starlabs UI source: https://github.com/8starlabs/ui; docs at https://ui.8starlabs.com. Library built on shadcn/ui and uses shadcn registry/CLI. Install via ; prerequisites: shadcn/ui init + Tailwind CSS (Node 18+)." -t context --tags ui,shadcn,8starlabs, exit=127, error=zsh:1: no such file or directory: component, next=avoid unquoted <> in shell commands
 <!-- tags: tooling, error-handling | created: 2026-03-02 -->
@@ -71,6 +75,14 @@
 <!-- tags: tooling, error-handling | created: 2026-02-20 -->
 
 ## Context
+
+### mem-1772562916-36fb
+> 8starlabs UI repo: https://github.com/8starlabs/ui; docs: https://ui.8starlabs.com; install via shadcn registry JSON endpoint (npx shadcn@latest add https://ui.8starlabs.com/r/<component>.json); prerequisites: Next.js + shadcn/ui init + Tailwind CSS, Node 18+; license MIT; components list at https://ui.8starlabs.com/docs/components
+<!-- tags: ui, shadcn, 8starlabs | created: 2026-03-03 -->
+
+### mem-1772560119-e0e0
+> 8starlabs UI repo: https://github.com/8starlabs/ui; docs: https://ui.8starlabs.com; install via shadcn registry JSON endpoint (npx shadcn@latest add https://ui.8starlabs.com/r/<component>.json) and components list at /docs/components; prerequisites: Next.js with shadcn/ui init + Tailwind CSS, Node 18+; license MIT.
+<!-- tags: ui, shadcn, 8starlabs | created: 2026-03-03 -->
 
 ### mem-1772474412-02a0
 > 8starlabs UI source: https://github.com/8starlabs/ui; docs at https://ui.8starlabs.com. Built on shadcn/ui and uses registry/CLI. Install via npx shadcn@latest add https://ui.8starlabs.com/r/<component>.json; prerequisites: shadcn/ui init + Tailwind CSS (Node 18+).

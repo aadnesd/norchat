@@ -8,10 +8,14 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w apps/api & npm run dev -w apps/web",
-    "build": "npm run build -w apps/api && npm run build -w apps/web",
-    "test": "npm run test -w apps/api && npm run test -w apps/web",
-    "lint": "npm run lint -w apps/api && npm run lint -w apps/web",
+    "dev": "npm run dev -w apps/api & npm run dev -w apps/worker & npm run dev -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/worker && npm run build -w apps/web",
+    "test": "npm run test -w apps/api && npm run test -w apps/worker && npm run test -w apps/web",
+    "lint": "npm run lint -w apps/api && npm run lint -w apps/worker && npm run lint -w apps/web",
     "acceptance:beta": "./scripts/beta-acceptance-check.sh"
+  },
+  "devDependencies": {
+    "@bradygaster/squad-cli": "^0.8.20",
+    "@opentelemetry/api": "^1.9.0"
   }
 }

@@ -16,6 +16,20 @@ Add a dedicated `apps/worker` workspace and include it in root workspace scripts
 - Added a minimal heartbeat/polling worker entrypoint (`apps/worker/src/index.ts`) with unit coverage
 - Updated `README.md` repo layout and root script orchestration
 
+### Ralph Heartbeat Cron Automation
+
+**Date:** 2026-03-05  
+**Origin:** Morpheus (Lead)
+
+Enable the `schedule` trigger in `.github/workflows/squad-heartbeat.yml` with a 30-minute cron so Ralph continuously scans and auto-triages untriaged squad issues.
+
+**Why:** The cloud heartbeat is the unattended automation layer for Ralph; with cron disabled, automatic triage depends on manual/event-only activation and can miss backlog drift.
+
+**Scope:**
+- Re-enabled `on.schedule` in `squad-heartbeat.yml`
+- Kept existing `issues`, `pull_request`, and `workflow_dispatch` triggers unchanged
+- Did not modify triage routing logic or label policy
+
 ## Governance
 
 - All meaningful changes require team consensus

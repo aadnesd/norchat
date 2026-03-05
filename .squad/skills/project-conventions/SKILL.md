@@ -30,6 +30,11 @@ Use this when adding or restructuring features across workspaces. The repo is a 
 - Tests live close to source as `*.test.ts` and run via Vitest.
 - ESLint is configured per workspace (`.eslintrc.cjs`) and run via workspace scripts.
 
+### Workflow automation toggles
+
+- Keep squad operational workflows in a three-trigger mode: `schedule` for unattended coverage, event hooks for immediate reactions, and `workflow_dispatch` for manual recovery.
+- Prefer enabling/disabling triggers (reversible ops change) before editing routing logic in workflow scripts.
+
 ## Examples
 
 ```

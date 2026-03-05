@@ -1,0 +1,45 @@
+{
+  "universe_usage_history": [
+    {
+      "assignment_id": "chatbase-2026-03-05",
+      "universe": "The Matrix",
+      "timestamp": "2026-03-05T12:23:32.551Z",
+      "team_size": 5
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "chatbase-2026-03-05": {
+      "project": "chatbase",
+      "owner": "Aadne S Djuve",
+      "universe": "The Matrix",
+      "created_at": "2026-03-05T12:23:32.551Z",
+      "members": [
+        {
+          "agent_id": "morpheus",
+          "persistent_name": "Morpheus",
+          "role": "Lead"
+        },
+        {
+          "agent_id": "trinity",
+          "persistent_name": "Trinity",
+          "role": "Frontend Dev"
+        },
+        {
+          "agent_id": "neo",
+          "persistent_name": "Neo",
+          "role": "Backend Dev"
+        },
+        {
+          "agent_id": "niobe",
+          "persistent_name": "Niobe",
+          "role": "Security & Compliance"
+        },
+        {
+          "agent_id": "switch",
+          "persistent_name": "Switch",
+          "role": "Tester"
+        }
+      ]
+    }
+  }
+}

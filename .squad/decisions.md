@@ -1,5 +1,14 @@
 # Squad Decisions
 
+## User Directives
+
+### 2026-03-06T09:17:48Z: Frontend testing & Playwright validation
+**By:** Aadne S Djuve (via Copilot)  
+**What:** For frontend-related issues, always have Switch run tests using playwright-cli, capture screenshots and logs, and post the results on the issue. If tests are not fully successful and the issue is not completed properly, the responsible developer must review the feedback and iterate.  
+**Why:** User request — captured for team memory
+
+---
+
 ## Active Decisions
 
 ### Sprint Planning Backlog (2026-03-05)

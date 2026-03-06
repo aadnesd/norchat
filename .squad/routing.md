@@ -9,6 +9,7 @@ How to decide who handles what.
 | API, tenants, sources, chat backend | Neo | Fastify routes, service logic, integrations |
 | Web onboarding flow and UI | Trinity | React components, Vite app flows, UX behavior |
 | Security, privacy, and GDPR controls | Niobe | Tenant isolation, auth boundaries, compliance controls |
+| Landing page and sales messaging | Cypher | Value prop, conversion copy, marketing clarity |
 | Code review | Morpheus | Review PRs, architecture fit, risk checks |
 | Testing | Switch | Test plans, integration tests, edge cases, regressions |
 | Scope & priorities | Morpheus | What to build next, trade-offs, decisions |

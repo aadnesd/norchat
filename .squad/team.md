@@ -17,12 +17,13 @@
 | Neo | Backend Dev | `.squad/agents/neo/charter.md` | ✅ Active |
 | Niobe | Security & Compliance | `.squad/agents/niobe/charter.md` | ✅ Active |
 | Switch | Tester | `.squad/agents/switch/charter.md` | ✅ Active |
+| Cypher | Marketing & Sales | `.squad/agents/cypher/charter.md` | ✅ Active |
 | Scribe | Session Logger | `.squad/agents/scribe/charter.md` | 📋 Silent |
 | Ralph | Work Monitor | — | 🔄 Monitor |
 
 ## Coding Agent
 
-<!-- copilot-auto-assign: false -->
+<!-- copilot-auto-assign: true -->
 
 | Name | Role | Charter | Status |
 |------|------|---------|--------|

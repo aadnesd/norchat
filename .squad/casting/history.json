@@ -38,6 +38,11 @@
           "agent_id": "switch",
           "persistent_name": "Switch",
           "role": "Tester"
+        },
+        {
+          "agent_id": "cypher",
+          "persistent_name": "Cypher",
+          "role": "Marketing & Sales"
         }
       ]
     }

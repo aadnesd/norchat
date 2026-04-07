@@ -6,10 +6,12 @@ import swaggerUi from "@fastify/swagger-ui";
 import { z } from "zod";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import OpenAI from "openai";
 import {
   buildChatPrompt,
   buildChatResponse,
   chunkResponseForStreaming,
+  type ChatResponse,
   type SourceCitationInfo
 } from "./chat-runtime.js";
 import { buildEmbedding } from "./embeddings.js";
@@ -133,7 +135,8 @@ const channelTypeSchema = z.enum([
   "salesforce",
   "shopify",
   "zapier",
-  "wordpress"
+  "wordpress",
+  "voice_agent"
 ]);
 
 const connectorChannelTypes = new Set([
@@ -146,7 +149,8 @@ const connectorChannelTypes = new Set([
   "salesforce",
   "shopify",
   "zapier",
-  "wordpress"
+  "wordpress",
+  "voice_agent"
 ]);
 
 const channelSchema = z
@@ -189,6 +193,9 @@ type ChannelConfig = Record<string, unknown> & {
   allowedDomains?: string[];
   authToken?: string;
   verifyToken?: string;
+  voiceLocale?: string;
+  voiceName?: string;
+  speakingRate?: number;
 };
 
 type InboundMessage = {
@@ -541,6 +548,25 @@ type RuntimePersistenceObservability = {
   lastFailureMessage?: string;
 };
 
+type ChatCompletionProviderInput = {
+  prompt: string;
+  model?: string;
+};
+
+type ChatCompletionProvider = (
+  input: ChatCompletionProviderInput
+) => Promise<string>;
+
+type AzureOpenAIProviderConfig = {
+  endpoint: string;
+  apiKey: string;
+  deployment: string;
+  apiVersion: string;
+  model?: string;
+  temperature: number;
+  maxTokens: number;
+};
+
 type BuildServerOptions = {
   vectorStoreDir?: string;
   runtimeStoreDir?: string;
@@ -549,6 +575,7 @@ type BuildServerOptions = {
     state: DurableRuntimeState
   ) => Promise<void>;
   runtimePersistRetry?: RuntimePersistRetryOptions;
+  chatCompletionProvider?: ChatCompletionProvider;
 };
 
 const resolveNonNegativeInt = (value: number | string | undefined, fallback: number) => {
@@ -557,6 +584,169 @@ const resolveNonNegativeInt = (value: number | string | undefined, fallback: num
     return fallback;
   }
   return Math.floor(parsed);
+};
+
+const resolveNumberWithinRange = (
+  value: number | string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+) => {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const getTrimmedValue = (value: string | undefined) => {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+};
+
+const MODEL_PROVIDER_AZURE_OPENAI = "azure_openai";
+const DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21";
+const DEFAULT_AZURE_OPENAI_TEMPERATURE = 0.2;
+const DEFAULT_AZURE_OPENAI_MAX_TOKENS = 450;
+
+const resolveAzureOpenAIProviderConfig = (): AzureOpenAIProviderConfig | undefined => {
+  const provider = getTrimmedValue(process.env.MODEL_PROVIDER)?.toLowerCase();
+  if (!provider || provider !== MODEL_PROVIDER_AZURE_OPENAI) {
+    return undefined;
+  }
+  const endpoint = getTrimmedValue(process.env.AZURE_OPENAI_ENDPOINT);
+  const apiKey = getTrimmedValue(process.env.AZURE_OPENAI_API_KEY);
+  const deployment = getTrimmedValue(process.env.AZURE_OPENAI_DEPLOYMENT);
+  const model = getTrimmedValue(process.env.AZURE_OPENAI_MODEL);
+  const apiVersion =
+    getTrimmedValue(process.env.AZURE_OPENAI_API_VERSION) ??
+    DEFAULT_AZURE_OPENAI_API_VERSION;
+  const missing: string[] = [];
+  if (!endpoint) {
+    missing.push("AZURE_OPENAI_ENDPOINT");
+  }
+  if (!apiKey) {
+    missing.push("AZURE_OPENAI_API_KEY");
+  }
+  if (!deployment) {
+    missing.push("AZURE_OPENAI_DEPLOYMENT");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `missing_azure_openai_configuration:${missing.join(",")}`
+    );
+  }
+  const azureEndpoint = endpoint;
+  const azureApiKey = apiKey;
+  const azureDeployment = deployment;
+  if (!azureEndpoint || !azureApiKey || !azureDeployment) {
+    throw new Error("invalid_azure_openai_configuration");
+  }
+  const temperature = resolveNumberWithinRange(
+    process.env.AZURE_OPENAI_TEMPERATURE,
+    DEFAULT_AZURE_OPENAI_TEMPERATURE,
+    0,
+    2
+  );
+  const maxTokens = Math.max(
+    1,
+    resolveNonNegativeInt(
+      process.env.AZURE_OPENAI_MAX_TOKENS,
+      DEFAULT_AZURE_OPENAI_MAX_TOKENS
+    )
+  );
+  return {
+    endpoint: azureEndpoint,
+    apiKey: azureApiKey,
+    deployment: azureDeployment,
+    apiVersion,
+    model,
+    temperature,
+    maxTokens
+  };
+};
+
+const createAzureOpenAIChatCompletionProvider = (
+  config: AzureOpenAIProviderConfig
+): ChatCompletionProvider => {
+  const normalizedEndpoint = config.endpoint.replace(/\/+$/u, "");
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: `${normalizedEndpoint}/openai/deployments/${config.deployment}`,
+    defaultQuery: { "api-version": config.apiVersion },
+    defaultHeaders: { "api-key": config.apiKey }
+  });
+  return async (input) => {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      {
+        role: "system",
+        content:
+          "You are a helpful support assistant for a Norwegian business. " +
+          "Answer concisely and rely on provided context. " +
+          "If context does not answer the question, clearly state uncertainty and suggest escalation."
+      },
+      {
+        role: "user",
+        content: input.prompt
+      }
+    ];
+    const model = input.model?.trim() || config.model || config.deployment;
+    const requestCompletion = (maxCompletionTokens: number) =>
+      client.chat.completions.create({
+        model,
+        temperature: config.temperature,
+        max_completion_tokens: maxCompletionTokens,
+        messages
+      });
+
+    let completion: Awaited<ReturnType<typeof requestCompletion>>;
+    try {
+      completion = await requestCompletion(config.maxTokens);
+    } catch (error) {
+      const status =
+        isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      const shouldRetryWithHigherOutputBudget =
+        status === 400 &&
+        /max_tokens|model output limit was reached/iu.test(message);
+      if (!shouldRetryWithHigherOutputBudget) {
+        throw error;
+      }
+      const retryMaxCompletionTokens = Math.min(
+        Math.max(config.maxTokens * 2, config.maxTokens + 256),
+        4096
+      );
+      completion = await requestCompletion(retryMaxCompletionTokens);
+    }
+    const content = completion.choices[0]?.message?.content;
+    if (typeof content === "string") {
+      const text = content.trim();
+      if (text.length > 0) {
+        return text;
+      }
+    }
+    if (Array.isArray(content)) {
+      const textParts: string[] = [];
+      for (const part of content) {
+        if (!isRecord(part)) {
+          continue;
+        }
+        const isTextPart = part.type === "text";
+        const text = part.text;
+        if (!isTextPart || typeof text !== "string") {
+          continue;
+        }
+        const normalized = text.trim();
+        if (normalized.length > 0) {
+          textParts.push(normalized);
+        }
+      }
+      if (textParts.length > 0) {
+        return textParts.join(" ");
+      }
+    }
+    throw new Error("model_empty_response");
+  };
 };
 
 const normalizeAllowedDomain = (domain: string) => {
@@ -606,11 +796,74 @@ const normalizeChannelConfig = (
     typeof config.authToken === "string" ? config.authToken.trim() : undefined;
   const verifyToken =
     typeof config.verifyToken === "string" ? config.verifyToken.trim() : undefined;
+  const voiceLocale =
+    typeof config.voiceLocale === "string" ? config.voiceLocale.trim() : undefined;
+  const voiceName =
+    typeof config.voiceName === "string" ? config.voiceName.trim() : undefined;
+  const speakingRateRaw =
+    typeof config.speakingRate === "number" ? config.speakingRate : undefined;
+  const speakingRate =
+    speakingRateRaw !== undefined && Number.isFinite(speakingRateRaw)
+      ? Math.max(0.5, Math.min(2, speakingRateRaw))
+      : undefined;
   return {
     ...config,
     allowedDomains: normalizeAllowedDomains(allowedDomains),
     authToken: authToken || undefined,
-    verifyToken: verifyToken || undefined
+    verifyToken: verifyToken || undefined,
+    voiceLocale: voiceLocale || undefined,
+    voiceName: voiceName || undefined,
+    speakingRate
+  };
+};
+
+const DEFAULT_VOICE_LOCALE = "nb-NO";
+const DEFAULT_VOICE_NAME = "nb-NO-Standard-A";
+const DEFAULT_VOICE_SPEAKING_RATE = 1;
+
+const escapeXml = (value: string) =>
+  value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;")
+    .replace(/'/gu, "&apos;");
+
+const buildVoiceSsml = (input: {
+  text: string;
+  locale: string;
+  voiceName: string;
+  speakingRate: number;
+}) => {
+  const speakingRatePercent = Math.round(input.speakingRate * 100);
+  return (
+    `<speak version="1.0" xml:lang="${escapeXml(input.locale)}">` +
+    `<voice name="${escapeXml(input.voiceName)}">` +
+    `<prosody rate="${speakingRatePercent}%">${escapeXml(input.text)}</prosody>` +
+    "</voice></speak>"
+  );
+};
+
+const buildVoiceReplyPayload = (response: ChatResponse, channel: Channel) => {
+  const voiceLocale = channel.config?.voiceLocale ?? DEFAULT_VOICE_LOCALE;
+  const voiceName = channel.config?.voiceName ?? DEFAULT_VOICE_NAME;
+  const speakingRate = channel.config?.speakingRate ?? DEFAULT_VOICE_SPEAKING_RATE;
+  return {
+    ...response,
+    speech: {
+      text: response.message,
+      ssml: buildVoiceSsml({
+        text: response.message,
+        locale: voiceLocale,
+        voiceName,
+        speakingRate
+      }),
+      voice: {
+        locale: voiceLocale,
+        name: voiceName,
+        speakingRate
+      }
+    }
   };
 };
 
@@ -1064,6 +1317,59 @@ const parseWordpressWebhook = (payload: Record<string, unknown>): WebhookParseRe
   };
 };
 
+const parseVoiceAgentWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const input = getRecord(payload.input);
+  const caller = getRecord(payload.caller);
+  const metadata = getRecord(payload.metadata);
+  const provider = pickFirstString(payload.provider);
+  const transcript = pickFirstString(
+    payload.transcript,
+    payload.message,
+    payload.text,
+    input?.transcript,
+    input?.message,
+    input?.text
+  );
+  if (!transcript) {
+    return { kind: "error", error: "voice_transcript_missing" };
+  }
+  const userId = pickFirstString(
+    payload.userId,
+    payload.user_id,
+    payload.callerId,
+    payload.caller_id,
+    caller?.id,
+    caller?.phone,
+    caller?.number
+  );
+  const threadKey = pickFirstString(
+    payload.sessionId,
+    payload.session_id,
+    payload.callId,
+    payload.call_id,
+    payload.conversationId,
+    payload.conversation_id,
+    payload.threadKey,
+    payload.thread_key,
+    userId
+  );
+  return {
+    kind: "message",
+    message: {
+      message: transcript,
+      userId,
+      threadKey,
+      metadata: {
+        ...metadata,
+        transcript,
+        callId: pickFirstString(payload.callId, payload.call_id),
+        sessionId: pickFirstString(payload.sessionId, payload.session_id),
+        ...(provider ? { provider } : {})
+      }
+    }
+  };
+};
+
 const parseChannelWebhookPayload = (
   channelType: z.infer<typeof channelTypeSchema>,
   payload: Record<string, unknown>
@@ -1089,6 +1395,8 @@ const parseChannelWebhookPayload = (
       return parseZapierWebhook(payload);
     case "wordpress":
       return parseWordpressWebhook(payload);
+    case "voice_agent":
+      return parseVoiceAgentWebhook(payload);
     default:
       return { kind: "error", error: "channel_not_supported" };
   }
@@ -1440,6 +1748,24 @@ export const buildServer = async (options?: BuildServerOptions) => {
     }
   });
   await fastify.register(swaggerUi, { routePrefix: "/docs" });
+
+  const azureOpenAIProviderConfig = resolveAzureOpenAIProviderConfig();
+  const chatCompletionProvider =
+    options?.chatCompletionProvider ??
+    (azureOpenAIProviderConfig
+      ? createAzureOpenAIChatCompletionProvider(azureOpenAIProviderConfig)
+      : undefined);
+  if (chatCompletionProvider && azureOpenAIProviderConfig) {
+    fastify.log.info(
+      {
+        provider: MODEL_PROVIDER_AZURE_OPENAI,
+        endpoint: azureOpenAIProviderConfig.endpoint,
+        deployment: azureOpenAIProviderConfig.deployment,
+        apiVersion: azureOpenAIProviderConfig.apiVersion
+      },
+      "chat model provider enabled"
+    );
+  }
 
   const vectorStoreDir =
     options?.vectorStoreDir ??
@@ -2005,11 +2331,34 @@ export const buildServer = async (options?: BuildServerOptions) => {
       context,
       sourceLookup
     });
-    const response = buildChatResponse({
+    const fallbackResponse = buildChatResponse({
       message: input.message,
       context,
       sourceLookup
     });
+    let response = fallbackResponse;
+    if (chatCompletionProvider) {
+      try {
+        const modelMessage = await chatCompletionProvider({
+          prompt,
+          model: agent.model
+        });
+        response = {
+          ...fallbackResponse,
+          message: modelMessage
+        };
+      } catch (error) {
+        fastify.log.error(
+          {
+            err: error,
+            agentId: agent.id,
+            provider: MODEL_PROVIDER_AZURE_OPENAI
+          },
+          "chat model provider request failed"
+        );
+        throw new RequestError("model_provider_failed", 502);
+      }
+    }
     return { agent, tenant, response, prompt, context };
   };
 
@@ -3206,10 +3555,14 @@ export const buildServer = async (options?: BuildServerOptions) => {
         channel,
         conversation
       });
+      const replyPayload =
+        channel.type === "voice_agent"
+          ? buildVoiceReplyPayload(response, channel)
+          : response;
       return reply.send({
         channelId: channel.id,
         conversationId: conversation.id,
-        reply: escalation ? { ...response, escalation } : response,
+        reply: escalation ? { ...replyPayload, escalation } : replyPayload,
         prompt,
         metadata: parsed.message.metadata
       });
@@ -4489,6 +4842,10 @@ export const buildServer = async (options?: BuildServerOptions) => {
         channel,
         conversation
       });
+      const responsePayload =
+        channel && channel.type === "voice_agent"
+          ? buildVoiceReplyPayload(response, channel)
+          : response;
 
       if (data.stream) {
         reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -4501,8 +4858,8 @@ export const buildServer = async (options?: BuildServerOptions) => {
           reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
         }
         const streamedResponse = escalation
-          ? { ...response, escalation }
-          : response;
+          ? { ...responsePayload, escalation }
+          : responsePayload;
         reply.raw.write(
           `data: ${JSON.stringify({
             done: true,
@@ -4515,7 +4872,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
       }
 
       return reply.send({
-        ...response,
+        ...responsePayload,
         ...(escalation ? { escalation } : {}),
         prompt,
         conversationId: conversation?.id

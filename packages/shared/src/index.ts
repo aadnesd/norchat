@@ -258,7 +258,8 @@ export type ChannelType =
   | "salesforce"
   | "shopify"
   | "zapier"
-  | "wordpress";
+  | "wordpress"
+  | "voice_agent";
 
 export type ChannelWebWidgetConfig = {
   allowedDomains?: string[];
@@ -276,9 +277,16 @@ export type ChannelWebhookConfig = {
   verifyToken?: string;
 };
 
+export type ChannelVoiceAgentConfig = ChannelWebhookConfig & {
+  voiceLocale?: string;
+  voiceName?: string;
+  speakingRate?: number;
+};
+
 export type ChannelConfig =
   | ChannelWebWidgetConfig
   | ChannelHelpPageConfig
+  | ChannelVoiceAgentConfig
   | ChannelWebhookConfig
   | Record<string, unknown>;
 

@@ -75,7 +75,8 @@ export type ChannelType =
   | "salesforce"
   | "shopify"
   | "zapier"
-  | "wordpress";
+  | "wordpress"
+  | "voice_agent";
 
 export type Channel = {
   id: string;

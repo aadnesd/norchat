@@ -11,8 +11,25 @@ describe("api routes", () => {
   let server: FastifyInstance;
   let vectorStoreDir: string;
   let runtimeStoreDir: string;
+  const modelProviderEnvKeys = [
+    "MODEL_PROVIDER",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION",
+    "AZURE_OPENAI_MODEL",
+    "AZURE_OPENAI_TEMPERATURE",
+    "AZURE_OPENAI_MAX_TOKENS"
+  ] as const;
+  const originalModelProviderEnv: Partial<
+    Record<(typeof modelProviderEnvKeys)[number], string | undefined>
+  > = {};
 
   beforeAll(async () => {
+    for (const key of modelProviderEnvKeys) {
+      originalModelProviderEnv[key] = process.env[key];
+      delete process.env[key];
+    }
     vectorStoreDir = await mkdtemp(path.join(tmpdir(), "vector-store-"));
     runtimeStoreDir = await mkdtemp(path.join(tmpdir(), "runtime-store-"));
     process.env.VECTOR_STORE_DIR = vectorStoreDir;
@@ -31,6 +48,14 @@ describe("api routes", () => {
     }
     delete process.env.VECTOR_STORE_DIR;
     delete process.env.RUNTIME_STORE_DIR;
+    for (const key of modelProviderEnvKeys) {
+      const value = originalModelProviderEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+        continue;
+      }
+      process.env[key] = value;
+    }
   });
 
   const authHeaders = (userId = "user_admin") => ({
@@ -2184,6 +2209,85 @@ describe("api routes", () => {
     expect(wordpressWebhookResponse.json().reply.message).toContain(
       "Support is available 24/7 via chat."
     );
+  });
+
+  it("handles voice webhooks and returns speech-ready payloads", async () => {
+    const { agent } = await seedAgentWithText(
+      "Voice Workspace",
+      "Support lines are open weekdays from 08:00 to 16:00."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "voice_agent",
+        config: {
+          authToken: "voice_secret",
+          voiceLocale: "nb-NO",
+          voiceName: "nb-NO-Standard-A",
+          speakingRate: 0.95
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const invalidWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        sessionId: "call_001"
+      }
+    });
+    expect(invalidWebhookResponse.statusCode).toBe(400);
+    expect(invalidWebhookResponse.json().error).toBe("voice_transcript_missing");
+
+    const firstVoiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        transcript: "When can I call support?",
+        sessionId: "call_001",
+        caller: {
+          phone: "+4799999999"
+        },
+        metadata: {
+          provider: "test_dialer"
+        }
+      }
+    });
+    expect(firstVoiceResponse.statusCode).toBe(200);
+    const firstBody = firstVoiceResponse.json();
+    expect(firstBody.reply.message).toContain("08:00 to 16:00");
+    expect(firstBody.reply.speech.text).toBe(firstBody.reply.message);
+    expect(firstBody.reply.speech.ssml).toContain("<speak");
+    expect(firstBody.reply.speech.voice.locale).toBe("nb-NO");
+    expect(firstBody.reply.speech.voice.name).toBe("nb-NO-Standard-A");
+    expect(firstBody.reply.speech.voice.speakingRate).toBe(0.95);
+    expect(firstBody.metadata.transcript).toBe("When can I call support?");
+    expect(firstBody.metadata.provider).toBe("test_dialer");
+
+    const secondVoiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        transcript: "Please repeat your opening hours.",
+        sessionId: "call_001"
+      }
+    });
+    expect(secondVoiceResponse.statusCode).toBe(200);
+    expect(secondVoiceResponse.json().conversationId).toBe(firstBody.conversationId);
   });
 
   it("auto-creates a CRM ticket for low-confidence webhook chats and avoids duplicate dispatch", async () => {

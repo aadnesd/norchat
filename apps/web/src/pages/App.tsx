@@ -33,8 +33,8 @@ const steps = [
   },
   {
     id: "channels",
-    title: "Deploy a web widget",
-    description: "Generate an embed snippet, allow your domain, and preview chat."
+    title: "Deploy a channel",
+    description: "Launch web or voice channels with the right deployment artifact and safeguards."
   }
 ];
 
@@ -95,7 +95,8 @@ type ChannelType =
   | "salesforce"
   | "shopify"
   | "zapier"
-  | "wordpress";
+  | "wordpress"
+  | "voice_agent";
 
 type Channel = {
   id: string;
@@ -109,11 +110,18 @@ type Channel = {
 const channelOptions: Array<{ label: string; value: ChannelType }> = [
   { label: "Web widget", value: "web_widget" },
   { label: "Help page", value: "help_page" },
+  { label: "Voice agent", value: "voice_agent" },
   { label: "Slack", value: "slack" },
   { label: "Zendesk", value: "zendesk" },
   { label: "WhatsApp", value: "whatsapp" },
   { label: "Shopify", value: "shopify" }
 ];
+
+const domainChannelTypes = new Set<ChannelType>(["web_widget", "help_page"]);
+
+const isDomainChannel = (channelType: ChannelType) => domainChannelTypes.has(channelType);
+
+const isVoiceChannel = (channelType: ChannelType) => channelType === "voice_agent";
 
 const formatError = (error: unknown) => {
   if (error instanceof Error) {
@@ -179,6 +187,10 @@ export function App() {
     "Returns are accepted within 30 days with proof of purchase. Refunds post within 5 business days."
   );
   const [domain, setDomain] = useState("support.nordiccare.no");
+  const [channelAuthToken, setChannelAuthToken] = useState("voice_shared_secret");
+  const [voiceLocale, setVoiceLocale] = useState("nb-NO");
+  const [voiceName, setVoiceName] = useState("nb-NO-Standard-A");
+  const [voiceSpeakingRate, setVoiceSpeakingRate] = useState("1");
   const [channelType, setChannelType] = useState<ChannelType>("web_widget");
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -233,11 +245,50 @@ export function App() {
 
   const step = steps[stepIndex];
 
-  const embedSnippet = useMemo(() => {
+  const deployArtifact = useMemo(() => {
     if (!activeChannel) {
-      return "Create a channel to generate your snippet.";
+      return "Create a channel to generate deployment instructions.";
     }
-    return `<script src="${apiBase}/widget.js" data-channel="${activeChannel.id}" data-api-base="${apiBase}"></script>`;
+    if (activeChannel.type === "web_widget") {
+      return `<script src="${apiBase}/widget.js" data-channel="${activeChannel.id}" data-api-base="${apiBase}"></script>`;
+    }
+    if (activeChannel.type === "help_page") {
+      return `${apiBase}/help/${activeChannel.id}`;
+    }
+    return `${apiBase}/channels/${activeChannel.id}/webhook`;
+  }, [activeChannel]);
+
+  const deployArtifactLabel = useMemo(() => {
+    if (!activeChannel) {
+      return "Deployment artifact";
+    }
+    if (activeChannel.type === "web_widget") {
+      return "Embed snippet";
+    }
+    if (activeChannel.type === "help_page") {
+      return "Help page URL";
+    }
+    if (activeChannel.type === "voice_agent") {
+      return "Voice webhook endpoint";
+    }
+    return "Webhook endpoint";
+  }, [activeChannel]);
+
+  const voiceWebhookExample = useMemo(() => {
+    if (!activeChannel || activeChannel.type !== "voice_agent") {
+      return null;
+    }
+    const authToken =
+      typeof activeChannel.config?.authToken === "string" &&
+      activeChannel.config.authToken.length > 0
+        ? activeChannel.config.authToken
+        : "<voice_channel_token>";
+    return [
+      `curl -X POST "${apiBase}/channels/${activeChannel.id}/webhook" \\`,
+      `  -H "Authorization: Bearer ${authToken}" \\`,
+      '  -H "Content-Type: application/json" \\',
+      '  -d \'{"transcript":"When are you open?","sessionId":"call_1001","caller":{"phone":"+4799999999"}}\''
+    ].join("\n");
   }, [activeChannel]);
 
   const helpPageUrl = useMemo(() => {
@@ -257,6 +308,35 @@ export function App() {
   const queuedSources = sources.filter((source) => source.status === "queued").length;
 
   const deploymentChecklist = useMemo(() => {
+    if (activeChannel?.type === "voice_agent") {
+      const authToken =
+        typeof activeChannel.config?.authToken === "string" &&
+        activeChannel.config.authToken.length > 0;
+      const hasVoiceConfig =
+        typeof activeChannel.config?.voiceLocale === "string" &&
+        typeof activeChannel.config?.voiceName === "string";
+      return [
+        {
+          id: "auth",
+          label: "Set webhook auth",
+          detail: "Protect voice webhook requests using a shared Bearer token.",
+          status: authToken ? "done" : "todo"
+        },
+        {
+          id: "transcript",
+          label: "Send transcript payload",
+          detail: "POST transcript + session metadata to the voice webhook endpoint.",
+          status: activeChannel ? "done" : "todo"
+        },
+        {
+          id: "speech",
+          label: "Render speech response",
+          detail: "Use reply.speech.ssml (or reply.speech.text) in your TTS provider.",
+          status: hasVoiceConfig ? "done" : "todo"
+        }
+      ];
+    }
+
     const allowedDomains =
       activeChannel?.config && "allowedDomains" in activeChannel.config
         ? (activeChannel.config.allowedDomains as string[] | undefined) ?? []
@@ -460,20 +540,53 @@ export function App() {
     }
   };
 
+  const buildChannelConfig = (selectedType: ChannelType) => {
+    if (isDomainChannel(selectedType)) {
+      return {
+        allowedDomains: domain.trim() ? [domain.trim()] : []
+      };
+    }
+
+    const authToken = channelAuthToken.trim();
+    if (!authToken) {
+      setErrorMessage("Auth token is required for webhook channels.");
+      return null;
+    }
+
+    if (!isVoiceChannel(selectedType)) {
+      return { authToken };
+    }
+
+    const speakingRate = Number(voiceSpeakingRate);
+    if (!Number.isFinite(speakingRate) || speakingRate < 0.5 || speakingRate > 2) {
+      setErrorMessage("Voice speaking rate must be between 0.5 and 2.0.");
+      return null;
+    }
+
+    return {
+      authToken,
+      voiceLocale: voiceLocale.trim() || "nb-NO",
+      voiceName: voiceName.trim() || "nb-NO-Standard-A",
+      speakingRate: Number(speakingRate.toFixed(2))
+    };
+  };
+
   const handleDeployChannel = async () => {
     if (!agent) {
       setErrorMessage("Create an agent before deploying a channel.");
       return;
     }
-    setIsSubmitting(true);
     setErrorMessage(null);
+    const config = buildChannelConfig(channelType);
+    if (!config) {
+      return;
+    }
+    setIsSubmitting(true);
     try {
       const channel = await apiClient.createChannel({
         agentId: agent.id,
         type: channelType,
-        config: {
-          allowedDomains: domain.trim() ? [domain.trim()] : []
-        },
+        config,
         enabled: true
       });
       setActiveChannel(channel);
@@ -484,17 +597,19 @@ export function App() {
     }
   };
 
-  const handleUpdateAllowlist = async () => {
+  const handleUpdateChannelConfig = async () => {
     if (!activeChannel) {
       return;
     }
-    setIsSubmitting(true);
     setErrorMessage(null);
+    const config = buildChannelConfig(activeChannel.type);
+    if (!config) {
+      return;
+    }
+    setIsSubmitting(true);
     try {
       const response = await apiClient.updateChannel(activeChannel.id, {
-        config: {
-          allowedDomains: domain.trim() ? [domain.trim()] : []
-        }
+        config
       });
       setActiveChannel(response.channel);
     } catch (error) {
@@ -562,7 +677,7 @@ export function App() {
             <div>
               <h2>10-minute onboarding flow</h2>
               <p className="muted">
-                Complete each step to deploy your first widget and start deflecting tickets.
+                Complete each step to deploy your first channel and start deflecting tickets.
               </p>
             </div>
             <Badge className="badge" variant="secondary">
@@ -812,10 +927,40 @@ export function App() {
                   ))}
                 </Select>
               </label>
-              <label>
-                Allowed domain
-                <Input value={domain} onChange={(event) => setDomain(event.target.value)} />
-              </label>
+              {isDomainChannel(channelType) && (
+                <label>
+                  Allowed domain
+                  <Input value={domain} onChange={(event) => setDomain(event.target.value)} />
+                </label>
+              )}
+              {!isDomainChannel(channelType) && (
+                <label>
+                  Auth token
+                  <Input
+                    value={channelAuthToken}
+                    onChange={(event) => setChannelAuthToken(event.target.value)}
+                  />
+                </label>
+              )}
+              {isVoiceChannel(channelType) && (
+                <>
+                  <label>
+                    Voice locale
+                    <Input value={voiceLocale} onChange={(event) => setVoiceLocale(event.target.value)} />
+                  </label>
+                  <label>
+                    Voice name
+                    <Input value={voiceName} onChange={(event) => setVoiceName(event.target.value)} />
+                  </label>
+                  <label>
+                    Speaking rate (0.5-2.0)
+                    <Input
+                      value={voiceSpeakingRate}
+                      onChange={(event) => setVoiceSpeakingRate(event.target.value)}
+                    />
+                  </label>
+                </>
+              )}
               <div className="panel-controls">
               <Button
                 type="button"
@@ -829,21 +974,27 @@ export function App() {
                 <Button
                   type="button"
                   variant="ghost"
-                  onClick={handleUpdateAllowlist}
+                  onClick={handleUpdateChannelConfig}
                   disabled={isSubmitting}
                 >
-                  Update allowlist
+                  {isDomainChannel(activeChannel.type) ? "Update allowlist" : "Update channel config"}
                 </Button>
               )}
             </div>
               <div className="info-card">
-                <h4>Embed snippet</h4>
-                <code>{embedSnippet}</code>
+                <h4>{deployArtifactLabel}</h4>
+                <code>{deployArtifact}</code>
               </div>
               {helpPageUrl && (
                 <div className="info-card">
                   <h4>Help page URL</h4>
                   <code>{helpPageUrl}</code>
+                </div>
+              )}
+              {voiceWebhookExample && (
+                <div className="info-card">
+                  <h4>Voice webhook example</h4>
+                  <code>{voiceWebhookExample}</code>
                 </div>
               )}
               <div className="checklist">
@@ -860,10 +1011,22 @@ export function App() {
                 ))}
               </div>
             <div className="preview-card">
-              <p className="status-label">Widget preview</p>
-              <p className="preview-title">Hi, I am {agentName}.</p>
-              <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
-              <Button type="button">Open live chat</Button>
+              <p className="status-label">
+                {isVoiceChannel(channelType) ? "Voice preview" : "Widget preview"}
+              </p>
+              <p className="preview-title">
+                {isVoiceChannel(channelType)
+                  ? `Voice agent ${agentName} is ready for call transcripts.`
+                  : `Hi, I am ${agentName}.`}
+              </p>
+              <p className="muted">
+                {isVoiceChannel(channelType)
+                  ? "Webhook replies include text + SSML so your telephony stack can synthesize audio."
+                  : "Ask me about returns, shipping, or warranty policies."}
+              </p>
+              <Button type="button">
+                {isVoiceChannel(channelType) ? "Simulate call turn" : "Open live chat"}
+              </Button>
             </div>
             </div>
           )}
@@ -1052,6 +1215,7 @@ export function App() {
               "Notion",
               "Zendesk",
               "Slack",
+              "Voice agent",
               "Shopify",
               "Stripe",
               "Cal.com",

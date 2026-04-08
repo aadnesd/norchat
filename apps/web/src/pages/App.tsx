@@ -123,6 +123,18 @@ const isDomainChannel = (channelType: ChannelType) => domainChannelTypes.has(cha
 
 const isVoiceChannel = (channelType: ChannelType) => channelType === "voice_agent";
 
+const hasTwilioChannelConfig = (channel: Channel | null) => {
+  if (!channel || channel.type !== "voice_agent") {
+    return false;
+  }
+  return (
+    channel.config?.twilioRealtimeEnabled === true ||
+    typeof channel.config?.twilioAccountSid === "string" ||
+    typeof channel.config?.twilioWebhookBaseUrl === "string" ||
+    typeof channel.config?.twilioFromNumber === "string"
+  );
+};
+
 const formatError = (error: unknown) => {
   if (error instanceof Error) {
     return error.message;
@@ -191,6 +203,18 @@ export function App() {
   const [voiceLocale, setVoiceLocale] = useState("nb-NO");
   const [voiceName, setVoiceName] = useState("nb-NO-Standard-A");
   const [voiceSpeakingRate, setVoiceSpeakingRate] = useState("1");
+  const [twilioAccountSid, setTwilioAccountSid] = useState("");
+  const [twilioAuthToken, setTwilioAuthToken] = useState("");
+  const [twilioApiKeySid, setTwilioApiKeySid] = useState("");
+  const [twilioApiKeySecret, setTwilioApiKeySecret] = useState("");
+  const [twilioFromNumber, setTwilioFromNumber] = useState("");
+  const [twilioWebhookBaseUrl, setTwilioWebhookBaseUrl] = useState("");
+  const [twilioLanguage, setTwilioLanguage] = useState("nb-NO");
+  const [twilioVoice, setTwilioVoice] = useState("alice");
+  const [twilioValidateSignature, setTwilioValidateSignature] = useState(true);
+  const [twilioRealtimeEnabled, setTwilioRealtimeEnabled] = useState(false);
+  const [twilioRealtimeVoice, setTwilioRealtimeVoice] = useState("alloy");
+  const [twilioRealtimeInstructions, setTwilioRealtimeInstructions] = useState("");
   const [channelType, setChannelType] = useState<ChannelType>("web_widget");
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -255,6 +279,9 @@ export function App() {
     if (activeChannel.type === "help_page") {
       return `${apiBase}/help/${activeChannel.id}`;
     }
+    if (activeChannel.type === "voice_agent" && hasTwilioChannelConfig(activeChannel)) {
+      return `${apiBase}/channels/${activeChannel.id}/twilio/voice`;
+    }
     return `${apiBase}/channels/${activeChannel.id}/webhook`;
   }, [activeChannel]);
 
@@ -269,7 +296,9 @@ export function App() {
       return "Help page URL";
     }
     if (activeChannel.type === "voice_agent") {
-      return "Voice webhook endpoint";
+      return hasTwilioChannelConfig(activeChannel)
+        ? "Twilio voice webhook"
+        : "Voice webhook endpoint";
     }
     return "Webhook endpoint";
   }, [activeChannel]);
@@ -288,6 +317,21 @@ export function App() {
       `  -H "Authorization: Bearer ${authToken}" \\`,
       '  -H "Content-Type: application/json" \\',
       '  -d \'{"transcript":"When are you open?","sessionId":"call_1001","caller":{"phone":"+4799999999"}}\''
+    ].join("\n");
+  }, [activeChannel]);
+
+  const twilioCallExample = useMemo(() => {
+    if (!activeChannel || activeChannel.type !== "voice_agent") {
+      return null;
+    }
+    if (!hasTwilioChannelConfig(activeChannel)) {
+      return null;
+    }
+    return [
+      `curl -X POST "${apiBase}/channels/${activeChannel.id}/twilio/calls" \\`,
+      '  -H "Content-Type: application/json" \\',
+      '  -H "x-user-id: user_admin" \\',
+      '  -d \'{"to":"+4799999999","initialPrompt":"Hei! Dette er en oppfolging fra support."}\''
     ].join("\n");
   }, [activeChannel]);
 
@@ -315,6 +359,28 @@ export function App() {
       const hasVoiceConfig =
         typeof activeChannel.config?.voiceLocale === "string" &&
         typeof activeChannel.config?.voiceName === "string";
+      const hasTwilioAccountSid =
+        typeof activeChannel.config?.twilioAccountSid === "string" &&
+        activeChannel.config.twilioAccountSid.length > 0;
+      const hasTwilioAuthToken =
+        typeof activeChannel.config?.twilioAuthToken === "string" &&
+        activeChannel.config.twilioAuthToken.length > 0;
+      const hasTwilioApiKeyPair =
+        typeof activeChannel.config?.twilioApiKeySid === "string" &&
+        activeChannel.config.twilioApiKeySid.length > 0 &&
+        typeof activeChannel.config?.twilioApiKeySecret === "string" &&
+        activeChannel.config.twilioApiKeySecret.length > 0;
+      const hasTwilioFromNumber =
+        typeof activeChannel.config?.twilioFromNumber === "string" &&
+        activeChannel.config.twilioFromNumber.length > 0;
+      const hasTwilioWebhookBaseUrl =
+        typeof activeChannel.config?.twilioWebhookBaseUrl === "string" &&
+        activeChannel.config.twilioWebhookBaseUrl.length > 0;
+      const twilioReady =
+        hasTwilioAccountSid &&
+        (hasTwilioAuthToken || hasTwilioApiKeyPair) &&
+        hasTwilioFromNumber &&
+        hasTwilioWebhookBaseUrl;
       return [
         {
           id: "auth",
@@ -333,6 +399,13 @@ export function App() {
           label: "Render speech response",
           detail: "Use reply.speech.ssml (or reply.speech.text) in your TTS provider.",
           status: hasVoiceConfig ? "done" : "todo"
+        },
+        {
+          id: "twilio",
+          label: "Plug Twilio credentials",
+          detail:
+            "Set twilioAccountSid + auth token (or API key pair), from number, and webhook base URL.",
+          status: twilioReady ? "done" : "todo"
         }
       ];
     }
@@ -563,12 +636,70 @@ export function App() {
       return null;
     }
 
-    return {
+    const twilioWebhookBaseUrlValue = twilioWebhookBaseUrl.trim();
+    if (twilioWebhookBaseUrlValue) {
+      try {
+        const parsed = new URL(twilioWebhookBaseUrlValue);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          setErrorMessage("Twilio webhook base URL must use http or https.");
+          return null;
+        }
+      } catch {
+        setErrorMessage("Twilio webhook base URL must be a valid URL.");
+        return null;
+      }
+    }
+
+    const config: Record<string, unknown> = {
       authToken,
       voiceLocale: voiceLocale.trim() || "nb-NO",
       voiceName: voiceName.trim() || "nb-NO-Standard-A",
       speakingRate: Number(speakingRate.toFixed(2))
     };
+
+    const twilioCredentials = [
+      ["twilioAccountSid", twilioAccountSid],
+      ["twilioAuthToken", twilioAuthToken],
+      ["twilioApiKeySid", twilioApiKeySid],
+      ["twilioApiKeySecret", twilioApiKeySecret],
+      ["twilioFromNumber", twilioFromNumber]
+    ] as const;
+    for (const [key, value] of twilioCredentials) {
+      const trimmed = value.trim();
+      if (trimmed) {
+        config[key] = trimmed;
+      }
+    }
+    if (twilioWebhookBaseUrlValue) {
+      config.twilioWebhookBaseUrl = twilioWebhookBaseUrlValue;
+    }
+    const twilioLanguageValue = twilioLanguage.trim();
+    if (twilioLanguageValue) {
+      config.twilioLanguage = twilioLanguageValue;
+    }
+    const twilioVoiceValue = twilioVoice.trim();
+    if (twilioVoiceValue) {
+      config.twilioVoice = twilioVoiceValue;
+    }
+    const hasTwilioFields = Object.keys(config).some((key) =>
+      key.startsWith("twilio")
+    );
+    if (hasTwilioFields || !twilioValidateSignature) {
+      config.twilioValidateSignature = twilioValidateSignature;
+    }
+    if (twilioRealtimeEnabled) {
+      config.twilioRealtimeEnabled = true;
+      const twilioRealtimeVoiceValue = twilioRealtimeVoice.trim();
+      if (twilioRealtimeVoiceValue) {
+        config.twilioRealtimeVoice = twilioRealtimeVoiceValue;
+      }
+      const twilioRealtimeInstructionsValue = twilioRealtimeInstructions.trim();
+      if (twilioRealtimeInstructionsValue) {
+        config.twilioRealtimeInstructions = twilioRealtimeInstructionsValue;
+      }
+    }
+
+    return config;
   };
 
   const handleDeployChannel = async () => {
@@ -959,6 +1090,105 @@ export function App() {
                       onChange={(event) => setVoiceSpeakingRate(event.target.value)}
                     />
                   </label>
+                  <label>
+                    Twilio account SID
+                    <Input
+                      value={twilioAccountSid}
+                      onChange={(event) => setTwilioAccountSid(event.target.value)}
+                      placeholder="AC..."
+                    />
+                  </label>
+                  <label>
+                    Twilio auth token
+                    <Input
+                      type="password"
+                      value={twilioAuthToken}
+                      onChange={(event) => setTwilioAuthToken(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Twilio API key SID
+                    <Input
+                      value={twilioApiKeySid}
+                      onChange={(event) => setTwilioApiKeySid(event.target.value)}
+                      placeholder="SK..."
+                    />
+                  </label>
+                  <label>
+                    Twilio API key secret
+                    <Input
+                      type="password"
+                      value={twilioApiKeySecret}
+                      onChange={(event) => setTwilioApiKeySecret(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Twilio from number
+                    <Input
+                      value={twilioFromNumber}
+                      onChange={(event) => setTwilioFromNumber(event.target.value)}
+                      placeholder="+4712345678"
+                    />
+                  </label>
+                  <label>
+                    Twilio webhook base URL
+                    <Input
+                      value={twilioWebhookBaseUrl}
+                      onChange={(event) => setTwilioWebhookBaseUrl(event.target.value)}
+                      placeholder="https://api.example.com"
+                    />
+                  </label>
+                  <label>
+                    Twilio language
+                    <Input
+                      value={twilioLanguage}
+                      onChange={(event) => setTwilioLanguage(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Twilio voice
+                    <Input value={twilioVoice} onChange={(event) => setTwilioVoice(event.target.value)} />
+                  </label>
+                  <label>
+                    Validate Twilio signature
+                    <Select
+                      value={twilioValidateSignature ? "true" : "false"}
+                      onChange={(event) => setTwilioValidateSignature(event.target.value === "true")}
+                    >
+                      <option value="true">Enabled</option>
+                      <option value="false">Disabled</option>
+                    </Select>
+                  </label>
+                  <label>
+                    Twilio realtime streaming
+                    <Select
+                      value={twilioRealtimeEnabled ? "true" : "false"}
+                      onChange={(event) => setTwilioRealtimeEnabled(event.target.value === "true")}
+                    >
+                      <option value="false">Disabled</option>
+                      <option value="true">Enabled</option>
+                    </Select>
+                  </label>
+                  {twilioRealtimeEnabled && (
+                    <>
+                      <label>
+                        Realtime voice
+                        <Input
+                          value={twilioRealtimeVoice}
+                          onChange={(event) => setTwilioRealtimeVoice(event.target.value)}
+                          placeholder="alloy"
+                        />
+                      </label>
+                      <label>
+                        Realtime instructions
+                        <Textarea
+                          value={twilioRealtimeInstructions}
+                          onChange={(event) => setTwilioRealtimeInstructions(event.target.value)}
+                          rows={4}
+                        />
+                      </label>
+                    </>
+                  )}
                 </>
               )}
               <div className="panel-controls">
@@ -995,6 +1225,12 @@ export function App() {
                 <div className="info-card">
                   <h4>Voice webhook example</h4>
                   <code>{voiceWebhookExample}</code>
+                </div>
+              )}
+              {twilioCallExample && (
+                <div className="info-card">
+                  <h4>Twilio outbound call example</h4>
+                  <code>{twilioCallExample}</code>
                 </div>
               )}
               <div className="checklist">

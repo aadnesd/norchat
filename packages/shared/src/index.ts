@@ -281,6 +281,20 @@ export type ChannelVoiceAgentConfig = ChannelWebhookConfig & {
   voiceLocale?: string;
   voiceName?: string;
   speakingRate?: number;
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioApiKeySid?: string;
+  twilioApiKeySecret?: string;
+  twilioFromNumber?: string;
+  twilioWebhookBaseUrl?: string;
+  twilioInitialPrompt?: string;
+  twilioReprompt?: string;
+  twilioLanguage?: string;
+  twilioVoice?: string;
+  twilioValidateSignature?: boolean;
+  twilioRealtimeEnabled?: boolean;
+  twilioRealtimeVoice?: string;
+  twilioRealtimeInstructions?: string;
 };
 
 export type ChannelConfig =

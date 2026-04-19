@@ -23,6 +23,7 @@ import {
   createStructuredLogger,
   createTypedError,
   isTypedError,
+  resolveRuntimeStoreDir,
   serializeTypedError
 } from "@norway-support/shared";
 
@@ -1593,9 +1594,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
     path.join(process.cwd(), "data", "vector-store");
   const vectorStore = createRegionalVectorStore(vectorStoreDir);
   const runtimeStoreDir =
-    options?.runtimeStoreDir ??
-    process.env.RUNTIME_STORE_DIR ??
-    path.join(process.cwd(), "data", "api-runtime");
+    options?.runtimeStoreDir ?? resolveRuntimeStoreDir();
   const runtimeStatePath = path.join(runtimeStoreDir, "runtime-state.json");
   const runtimeStatePersister =
     options?.runtimeStatePersister ?? persistDurableRuntimeState;

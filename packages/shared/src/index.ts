@@ -549,3 +549,99 @@ export type NotionSyncCheckResult = {
   upToDate: string[];
   thresholdMs: number;
 };
+
+// --- Runtime store path resolution ---------------------------------------
+//
+// API and worker processes must agree on the same runtime-state file.
+// npm workspaces run each workspace with its own cwd (apps/api, apps/worker,
+// etc.), so `path.join(process.cwd(), "data", "api-runtime")` resolves to
+// DIFFERENT directories per process and jobs written by the API would never
+// be seen by the worker. This helper locates the repo root (the directory
+// containing a package.json with `"workspaces"`) and anchors the default
+// runtime store there, so both processes write to one shared location
+// regardless of cwd.
+//
+// Environment overrides are still honored for deployments where processes
+// run on different hosts or use an external queue.
+
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+
+const isWorkspaceRoot = (dir: string): boolean => {
+  const pkgPath = path.join(dir, "package.json");
+  if (!existsSync(pkgPath)) {
+    return false;
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+      workspaces?: unknown;
+    };
+    return Array.isArray(pkg.workspaces) || typeof pkg.workspaces === "object";
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Walk upward from `startDir` looking for a package.json with a `workspaces`
+ * field. Falls back to `startDir` itself if no workspace root is found.
+ */
+export const findWorkspaceRoot = (startDir: string = process.cwd()): string => {
+  let current = path.resolve(startDir);
+  // Guard against infinite loops on broken filesystems.
+  for (let i = 0; i < 32; i += 1) {
+    if (isWorkspaceRoot(current)) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return startDir;
+    }
+    current = parent;
+  }
+  return startDir;
+};
+
+/**
+ * Resolve the canonical runtime store directory.
+ *
+ * Precedence:
+ *   1. `RUNTIME_STORE_DIR` env var (if set and non-empty)
+ *   2. `<workspace-root>/data/api-runtime`
+ *
+ * Both the API and every worker process MUST agree on this path, otherwise
+ * jobs written by one process will never be seen by the other. Prefer
+ * `RUNTIME_STORE_DIR` in production / multi-host deployments.
+ */
+export const resolveRuntimeStoreDir = (options?: {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+}): string => {
+  const env = options?.env ?? process.env;
+  const override = env.RUNTIME_STORE_DIR;
+  if (override && override.trim()) {
+    return override;
+  }
+  const root = findWorkspaceRoot(options?.cwd ?? process.cwd());
+  return path.join(root, "data", "api-runtime");
+};
+
+/**
+ * Resolve the canonical runtime state file path (runtime-state.json inside
+ * the runtime store dir). Accepts a full-path override for test harnesses.
+ */
+export const resolveRuntimeStatePath = (options?: {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  runtimeStateFileOverride?: string;
+}): string => {
+  if (options?.runtimeStateFileOverride && options.runtimeStateFileOverride.trim()) {
+    return options.runtimeStateFileOverride;
+  }
+  const env = options?.env ?? process.env;
+  const explicit = env.WORKER_RUNTIME_STATE_PATH;
+  if (explicit && explicit.trim()) {
+    return explicit;
+  }
+  return path.join(resolveRuntimeStoreDir({ env, cwd: options?.cwd }), "runtime-state.json");
+};

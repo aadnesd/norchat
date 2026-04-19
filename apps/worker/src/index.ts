@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStructuredLogger, createTypedError } from "@norway-support/shared";
+import { createStructuredLogger, createTypedError, resolveRuntimeStatePath } from "@norway-support/shared";
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_CONCURRENCY = 1;
@@ -360,14 +360,21 @@ export function parseRetryMaxDelay(
 }
 
 export function parseRuntimeStatePath(value = process.env.WORKER_RUNTIME_STATE_PATH): string {
+  // Prefer the shared resolver so API and worker always land on the same file,
+  // even when npm workspaces launch each process with its own cwd. Explicit
+  // overrides are honored in this precedence order:
+  //   1. `value` / WORKER_RUNTIME_STATE_PATH (explicit full file path)
+  //   2. WORKER_RUNTIME_STORE_DIR (worker-only dir override, legacy)
+  //   3. RUNTIME_STORE_DIR (shared dir override)
+  //   4. <workspace-root>/data/api-runtime (shared default)
   if (value && value.trim()) {
     return value;
   }
-  const runtimeStoreDir =
-    process.env.WORKER_RUNTIME_STORE_DIR ??
-    process.env.RUNTIME_STORE_DIR ??
-    path.join(process.cwd(), "data", "api-runtime");
-  return path.join(runtimeStoreDir, "runtime-state.json");
+  const workerDirOverride = process.env.WORKER_RUNTIME_STORE_DIR;
+  if (workerDirOverride && workerDirOverride.trim()) {
+    return path.join(workerDirOverride, "runtime-state.json");
+  }
+  return resolveRuntimeStatePath();
 }
 
 export function runWorkerTick(now = new Date()): string {

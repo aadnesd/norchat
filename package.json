@@ -12,7 +12,8 @@
     "build": "npm run build -w apps/api && npm run build -w apps/worker && npm run build -w apps/web",
     "test": "npm run test -w apps/api && npm run test -w apps/worker && npm run test -w apps/web",
     "lint": "npm run lint -w apps/api && npm run lint -w apps/worker && npm run lint -w apps/web",
-    "acceptance:beta": "./scripts/beta-acceptance-check.sh"
+    "acceptance:beta": "./scripts/beta-acceptance-check.sh",
+    "perf:load": "npm exec -- tsx scripts/load-test.ts"
   },
   "devDependencies": {
     "@bradygaster/squad-cli": "^0.8.20",

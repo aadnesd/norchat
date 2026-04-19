@@ -12,3 +12,5 @@ playwright-report
 # Squad: ignore generated logs
 .squad/orchestration-log/
 .squad/log/
+
+apps/api/data/

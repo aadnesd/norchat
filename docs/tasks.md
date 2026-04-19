@@ -139,6 +139,11 @@ Why: Persistence reliability needs operational visibility so queue depth, write 
 Tests: `npm run test -w apps/api`, `npm run build`.
 Implementation outcome: Runtime-state persistence now emits observability signals for queue depth, write latency, and repeated failure counts to improve troubleshooting.
 
+31. Durable async worker queue processing is implemented in `apps/worker` with lifecycle/retry/recovery coverage.
+Why: Background ingestion/retrain execution must be handled outside the API request path with durable lifecycle state and bounded retry behavior.
+Tests: `npm run test -w apps/worker`, `npx vitest --run src/__tests__/api.spec.ts --reporter=dot` (in `apps/api`), `npx vitest --run src/__tests__/agent-settings.spec.ts --reporter=dot` (in `apps/api`), `npm run build -w apps/worker`, `npm run build -w apps/api`.
+Implementation outcome: Worker now consumes queued jobs from runtime-state, persists `queued -> processing -> complete/failed` transitions, applies exponential backoff with max-attempt cutoff and terminal error details, re-queues stale `processing` jobs on restart, and drains in-flight work during shutdown. API/shared ingestion job schemas include retry/error fields so job status APIs can surface lifecycle metadata.
+
 ## Planned Tasks
 
 1. `runtime-state-capacity-config` (priority 4).

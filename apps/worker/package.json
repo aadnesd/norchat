@@ -10,6 +10,9 @@
     "lint": "eslint . --ext .ts",
     "test": "vitest --run"
   },
+  "dependencies": {
+    "@norway-support/shared": "0.1.0"
+  },
   "devDependencies": {
     "@types/node": "^20.11.5",
     "@typescript-eslint/eslint-plugin": "^7.1.1",

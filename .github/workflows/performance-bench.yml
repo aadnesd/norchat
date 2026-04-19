@@ -1,0 +1,46 @@
+name: Performance Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      chat_concurrency:
+        description: Concurrent chat workers
+        required: false
+        default: "8"
+      ingestion_concurrency:
+        description: Concurrent ingestion workers
+        required: false
+        default: "4"
+      requests_per_worker:
+        description: Requests per worker
+        required: false
+        default: "20"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Run performance benchmark
+        run: |
+          npm run perf:load -- \
+            --chat-concurrency ${{ inputs.chat_concurrency }} \
+            --ingestion-concurrency ${{ inputs.ingestion_concurrency }} \
+            --requests-per-worker ${{ inputs.requests_per_worker }} \
+            --output artifacts/performance/report.json
+      - name: Upload performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: artifacts/performance/report.json
+          retention-days: 14

@@ -100,4 +100,36 @@ describe("onboarding api client", () => {
       metadata: { title: "Returns" }
     });
   });
+
+  it("lists agents and patches agent settings", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], agent: { id: "agent_1" } })
+    });
+
+    const api = createApiClient(baseUrl, "user_settings");
+    await api.getAgents();
+    await api.updateAgentSettings("agent_1", {
+      basePrompt: "Updated prompt",
+      model: "gpt-4.1",
+      retrievalConfig: {
+        minScore: 0.3,
+        maxResults: 4
+      }
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${baseUrl}/agents`);
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("GET");
+    expect(fetchMock.mock.calls[1][0]).toBe(`${baseUrl}/agents/agent_1`);
+    expect(fetchMock.mock.calls[1][1]?.method).toBe("PATCH");
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toMatchObject({
+      basePrompt: "Updated prompt",
+      model: "gpt-4.1",
+      retrievalConfig: {
+        minScore: 0.3,
+        maxResults: 4
+      }
+    });
+  });
 });

@@ -19,6 +19,12 @@ import {
 } from "./vector-store.js";
 import { buildHelpPage, buildWidgetScript } from "./ui-templates.js";
 import { createStripeClient, StripeError } from "./stripe-client.js";
+import {
+  createStructuredLogger,
+  createTypedError,
+  isTypedError,
+  serializeTypedError
+} from "@norway-support/shared";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -61,6 +67,20 @@ const retentionPolicyInputSchema = z
     path: ["days"]
   });
 
+const tenantQuotaUpdateSchema = z
+  .object({
+    reset: z.boolean().optional(),
+    used: z.coerce.number().int().min(0).optional(),
+    limit: z.coerce.number().int().positive().optional()
+  })
+  .refine(
+    (data) => data.reset !== undefined || data.used !== undefined || data.limit !== undefined,
+    {
+      message: "quota_update_required",
+      path: ["reset"]
+    }
+  );
+
 type RetentionPolicy = {
   tenantId: string;
   days: number;
@@ -91,17 +111,45 @@ type AuditEvent = {
   createdAt: string;
 };
 
+const retrievalConfigSchema = z
+  .object({
+    minScore: z.number().min(0).max(1).optional(),
+    maxResults: z.number().int().min(1).max(10).optional()
+  })
+  .refine((data) => data.minScore !== undefined || data.maxResults !== undefined, {
+    message: "retrieval_config_requires_field",
+    path: ["minScore"]
+  });
+
 const agentSchema = z.object({
   tenantId: z.string().min(1),
   name: z.string().min(1),
   basePrompt: z.string().min(1).optional(),
-  model: z.string().min(1).optional()
+  model: z.string().min(1).optional(),
+  retrievalConfig: retrievalConfigSchema.optional()
 });
 type Agent = z.infer<typeof agentSchema> & {
   id: string;
   status: "draft" | "active";
   createdAt: string;
 };
+
+const agentSettingsUpdateSchema = z
+  .object({
+    basePrompt: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    retrievalConfig: retrievalConfigSchema.optional()
+  })
+  .refine(
+    (data) =>
+      data.basePrompt !== undefined ||
+      data.model !== undefined ||
+      data.retrievalConfig !== undefined,
+    {
+      message: "settings_required",
+      path: ["basePrompt"]
+    }
+  );
 
 const sourceSchema = z
   .object({
@@ -428,34 +476,52 @@ const ingestionJobStatusSchema = z.enum([
   "failed"
 ]);
 
-type IngestionJob = {
-  id: string;
-  sourceId: string;
-  kind: "crawl" | "file" | "notion";
-  status: z.infer<typeof ingestionJobStatusSchema>;
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
-  durationMs?: number;
-  slaMet?: boolean;
-};
+const ingestionJobKindSchema = z.enum([
+  "crawl",
+  "file",
+  "notion",
+  "text",
+  "qa",
+  "retrain",
+  "action"
+]);
+
+const ingestionJobErrorSchema = z.object({
+  message: z.string().min(1),
+  transient: z.boolean(),
+  attempts: z.number().int().nonnegative(),
+  at: z.string()
+});
+
+const ingestionJobSchema = z.object({
+  id: z.string().min(1),
+  sourceId: z.string().min(1),
+  kind: ingestionJobKindSchema,
+  status: ingestionJobStatusSchema,
+  createdAt: z.string(),
+  startedAt: z.string().optional(),
+  completedAt: z.string().optional(),
+  durationMs: z.number().optional(),
+  slaMet: z.boolean().optional(),
+  attempts: z.number().int().nonnegative().optional(),
+  maxAttempts: z.number().int().positive().optional(),
+  nextAttemptAt: z.string().optional(),
+  lastError: ingestionJobErrorSchema.optional()
+});
+
+type IngestionJob = z.infer<typeof ingestionJobSchema>;
+
+const tenantQuotaUsageSchema = z.object({
+  tenantId: z.string().min(1),
+  used: z.number().int().min(0),
+  periodStart: z.string(),
+  quotaLimit: z.number().int().positive().optional()
+});
+
+type TenantQuotaUsage = z.infer<typeof tenantQuotaUsageSchema>;
 
 const durableRuntimeStateSchema = z.object({
-  ingestionJobs: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        sourceId: z.string().min(1),
-        kind: z.enum(["crawl", "file", "notion"]),
-        status: ingestionJobStatusSchema,
-        createdAt: z.string(),
-        startedAt: z.string().optional(),
-        completedAt: z.string().optional(),
-        durationMs: z.number().optional(),
-        slaMet: z.boolean().optional()
-      })
-    )
-    .default([]),
+  ingestionJobs: z.array(ingestionJobSchema).default([]),
   metricEvents: z
     .array(
       z.object({
@@ -483,6 +549,9 @@ const durableRuntimeStateSchema = z.object({
         createdAt: z.string()
       })
     )
+    .default([]),
+  tenantQuotaUsage: z
+    .array(tenantQuotaUsageSchema)
     .default([])
 });
 
@@ -491,7 +560,8 @@ type DurableRuntimeState = z.infer<typeof durableRuntimeStateSchema>;
 const emptyDurableRuntimeState = (): DurableRuntimeState => ({
   ingestionJobs: [],
   metricEvents: [],
-  auditEvents: []
+  auditEvents: [],
+  tenantQuotaUsage: []
 });
 
 const loadDurableRuntimeState = async (
@@ -527,6 +597,11 @@ type RuntimePersistRetryOptions = {
   sleep?: (ms: number) => Promise<void>;
 };
 
+type RuntimeStateCapOptions = {
+  maxMetricEvents?: number;
+  maxAuditEvents?: number;
+};
+
 type RuntimePersistenceObservability = {
   queueDepth: number;
   peakQueueDepth: number;
@@ -549,11 +624,20 @@ type BuildServerOptions = {
     state: DurableRuntimeState
   ) => Promise<void>;
   runtimePersistRetry?: RuntimePersistRetryOptions;
+  runtimeStateCaps?: RuntimeStateCapOptions;
 };
 
 const resolveNonNegativeInt = (value: number | string | undefined, fallback: number) => {
   const parsed = Number(value ?? "");
   if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+};
+
+const resolvePositiveInt = (value: number | string | undefined, fallback: number) => {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed) || parsed < 1) {
     return fallback;
   }
   return Math.floor(parsed);
@@ -1138,24 +1222,6 @@ const isDomainAllowed = (allowedDomains: string[], originHost: string) => {
   });
 };
 
-class ActionExecutionError extends Error {
-  statusCode: number;
-
-  constructor(message: string, statusCode = 400) {
-    super(message);
-    this.statusCode = statusCode;
-  }
-}
-
-class RequestError extends Error {
-  statusCode: number;
-
-  constructor(message: string, statusCode = 400) {
-    super(message);
-    this.statusCode = statusCode;
-  }
-}
-
 const parseWithSchema = <T>(
   schema: z.ZodSchema<T>,
   value: unknown,
@@ -1163,7 +1229,11 @@ const parseWithSchema = <T>(
 ) => {
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
-    throw new ActionExecutionError(errorCode, 400);
+    throw createTypedError({
+      code: errorCode,
+      statusCode: 400,
+      details: parsed.error.flatten()
+    });
   }
   return parsed.data;
 };
@@ -1249,10 +1319,16 @@ const executeAction = (
       const allowCustomAmount = config.allowCustomAmount ?? true;
       const amount = input.amount ?? config.defaultAmount;
       if (amount === undefined) {
-        throw new ActionExecutionError("billing_amount_required", 400);
+        throw createTypedError({
+          code: "billing_amount_required",
+          statusCode: 400
+        });
       }
       if (input.amount !== undefined && !allowCustomAmount) {
-        throw new ActionExecutionError("custom_amount_not_allowed", 400);
+        throw createTypedError({
+          code: "custom_amount_not_allowed",
+          statusCode: 400
+        });
       }
       const currency = (input.currency ?? config.currency ?? "NOK").toUpperCase();
       const stripeApiKey =
@@ -1309,7 +1385,10 @@ const executeAction = (
         switch (input.action) {
           case "create": {
             if (!input.priceId) {
-              throw new ActionExecutionError("subscription_price_required", 400);
+              throw createTypedError({
+                code: "subscription_price_required",
+                statusCode: 400
+              });
             }
             const sub = stripe.subscriptions.create({
               customerId: input.customerId,
@@ -1336,7 +1415,10 @@ const executeAction = (
           }
           case "cancel": {
             if (!input.subscriptionId) {
-              throw new ActionExecutionError("subscription_id_required", 400);
+              throw createTypedError({
+                code: "subscription_id_required",
+                statusCode: 400
+              });
             }
             const canceled = stripe.subscriptions.cancel(input.subscriptionId, {
               cancelAtPeriodEnd: input.cancelAtPeriodEnd
@@ -1357,7 +1439,10 @@ const executeAction = (
           }
           case "retrieve": {
             if (!input.subscriptionId) {
-              throw new ActionExecutionError("subscription_id_required", 400);
+              throw createTypedError({
+                code: "subscription_id_required",
+                statusCode: 400
+              });
             }
             const sub = stripe.subscriptions.retrieve(input.subscriptionId);
             return {
@@ -1380,7 +1465,11 @@ const executeAction = (
         break;
       } catch (err) {
         if (err instanceof StripeError) {
-          throw new ActionExecutionError(err.message, err.statusCode);
+          throw createTypedError({
+            code: "stripe_error",
+            message: err.message,
+            statusCode: err.statusCode
+          });
         }
         throw err;
       }
@@ -1416,18 +1505,60 @@ const executeAction = (
         };
       } catch (err) {
         if (err instanceof StripeError) {
-          throw new ActionExecutionError(err.message, err.statusCode);
+          throw createTypedError({
+            code: "stripe_error",
+            message: err.message,
+            statusCode: err.statusCode
+          });
         }
         throw err;
       }
     }
     default:
-      throw new ActionExecutionError("action_type_not_supported", 400);
+      throw createTypedError({
+        code: "action_type_not_supported",
+        statusCode: 400
+      });
   }
 };
 
 export const buildServer = async (options?: BuildServerOptions) => {
   const fastify = Fastify({ logger: true });
+  const apiLogger = createStructuredLogger({
+    service: "api",
+    sink: (entry) => {
+      const { level, message, ...metadata } = entry;
+      if (level === "error") {
+        fastify.log.error(metadata, message);
+        return;
+      }
+      if (level === "warn") {
+        fastify.log.warn(metadata, message);
+        return;
+      }
+      if (level === "debug") {
+        fastify.log.debug(metadata, message);
+        return;
+      }
+      fastify.log.info(metadata, message);
+    }
+  });
+
+  const getOptionalHeader = (value: unknown) =>
+    typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
+  const getContentLength = (value: unknown) => {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return parsed;
+      }
+    }
+    return undefined;
+  };
 
   await fastify.register(cors, { origin: true });
   await fastify.register(helmet);
@@ -1440,6 +1571,21 @@ export const buildServer = async (options?: BuildServerOptions) => {
     }
   });
   await fastify.register(swaggerUi, { routePrefix: "/docs" });
+  fastify.addHook("onResponse", async (request, reply) => {
+    apiLogger.info("request.completed", {
+      traceId: getOptionalHeader(request.headers["x-trace-id"]) ?? request.id,
+      tenantId: getOptionalHeader(request.headers["x-tenant-id"]),
+      userId:
+        getOptionalHeader(request.headers["x-user-id"]) ??
+        getOptionalHeader(request.headers["x-actor-id"]),
+      method: request.method,
+      path: request.url,
+      statusCode: reply.statusCode,
+      latencyMs: Number.isFinite(reply.elapsedTime) ? Math.round(reply.elapsedTime) : undefined,
+      requestSizeBytes: getContentLength(request.headers["content-length"]),
+      responseSizeBytes: getContentLength(reply.getHeader("content-length"))
+    });
+  });
 
   const vectorStoreDir =
     options?.vectorStoreDir ??
@@ -1493,6 +1639,28 @@ export const buildServer = async (options?: BuildServerOptions) => {
   const ingestionJobs = new Map<string, IngestionJob>(
     persistedRuntimeState.ingestionJobs.map((job) => [job.id, job])
   );
+  const tenantQuotaUsage = new Map<string, TenantQuotaUsage>(
+    persistedRuntimeState.tenantQuotaUsage.map((entry) => [entry.tenantId, entry])
+  );
+  const tenantRateLimitState = new Map<
+    string,
+    {
+      tokens: number;
+      lastRefillAt: number;
+    }
+  >();
+  const tenantRateLimitCapacity = resolveNonNegativeInt(
+    process.env.TENANT_RATE_LIMIT_CAPACITY,
+    120
+  );
+  const tenantRateLimitWindowMs = Math.max(
+    resolveNonNegativeInt(process.env.TENANT_RATE_LIMIT_WINDOW_MS, 60_000),
+    1000
+  );
+  const defaultTenantMonthlyQuota = resolveNonNegativeInt(
+    process.env.TENANT_MONTHLY_QUOTA,
+    10_000
+  );
   const channelThreads = new Map<string, string>();
   const notionSyncState = new Map<
     string,
@@ -1517,11 +1685,19 @@ export const buildServer = async (options?: BuildServerOptions) => {
       chunkOverlap?: number;
     }
   >();
-  const maxMetricEvents = 5000;
+  const maxMetricEvents = resolvePositiveInt(
+    options?.runtimeStateCaps?.maxMetricEvents ??
+      process.env.RUNTIME_STATE_MAX_METRIC_EVENTS,
+    5000
+  );
   const metricEvents: MetricEvent[] = persistedRuntimeState.metricEvents.slice(
     -maxMetricEvents
   );
-  const maxAuditEvents = 5000;
+  const maxAuditEvents = resolvePositiveInt(
+    options?.runtimeStateCaps?.maxAuditEvents ??
+      process.env.RUNTIME_STATE_MAX_AUDIT_EVENTS,
+    5000
+  );
   const auditEvents: AuditEvent[] = persistedRuntimeState.auditEvents.slice(
     -maxAuditEvents
   );
@@ -1608,7 +1784,8 @@ export const buildServer = async (options?: BuildServerOptions) => {
     const snapshot: DurableRuntimeState = {
       ingestionJobs: Array.from(ingestionJobs.values()),
       metricEvents: [...metricEvents],
-      auditEvents: [...auditEvents]
+      auditEvents: [...auditEvents],
+      tenantQuotaUsage: Array.from(tenantQuotaUsage.values())
     };
     runtimePersistQueue = runtimePersistQueue
       .catch(() => undefined)
@@ -1630,16 +1807,269 @@ export const buildServer = async (options?: BuildServerOptions) => {
       });
   };
 
+  const refreshIngestionJobsFromRuntimeState = async () => {
+    const latestRuntimeState = await loadDurableRuntimeState(runtimeStatePath);
+    for (const job of latestRuntimeState.ingestionJobs) {
+      ingestionJobs.set(job.id, job);
+    }
+  };
+
   fastify.addHook("onClose", async () => {
     await runtimePersistQueue;
   });
 
   if (
     persistedRuntimeState.metricEvents.length !== metricEvents.length ||
-    persistedRuntimeState.auditEvents.length !== auditEvents.length
+    persistedRuntimeState.auditEvents.length !== auditEvents.length ||
+    persistedRuntimeState.tenantQuotaUsage.length !== tenantQuotaUsage.size
   ) {
     queueRuntimeStatePersist();
   }
+
+  const getTenantQuotaPeriodStart = (referenceDate: Date) =>
+    new Date(
+      Date.UTC(
+        referenceDate.getUTCFullYear(),
+        referenceDate.getUTCMonth(),
+        1
+      )
+    ).toISOString();
+
+  const getTenantQuotaPeriodEnd = (periodStart: string) => {
+    const parsed = new Date(periodStart);
+    const baseDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+    return new Date(
+      Date.UTC(baseDate.getUTCFullYear(), baseDate.getUTCMonth() + 1, 1)
+    ).toISOString();
+  };
+
+  const getTenantQuotaLimit = (entry?: TenantQuotaUsage) =>
+    entry?.quotaLimit ?? defaultTenantMonthlyQuota;
+
+  const ensureTenantQuotaEntry = (tenantId: string, now = new Date()) => {
+    const periodStart = getTenantQuotaPeriodStart(now);
+    const existing = tenantQuotaUsage.get(tenantId);
+    if (!existing) {
+      const created: TenantQuotaUsage = {
+        tenantId,
+        used: 0,
+        periodStart
+      };
+      tenantQuotaUsage.set(tenantId, created);
+      queueRuntimeStatePersist();
+      return created;
+    }
+    if (existing.periodStart !== periodStart) {
+      const rolled: TenantQuotaUsage = {
+        ...existing,
+        used: 0,
+        periodStart
+      };
+      tenantQuotaUsage.set(tenantId, rolled);
+      queueRuntimeStatePersist();
+      return rolled;
+    }
+    return existing;
+  };
+
+  const buildTenantQuotaSnapshot = (tenantId: string, now = new Date()) => {
+    const entry = ensureTenantQuotaEntry(tenantId, now);
+    const limit = getTenantQuotaLimit(entry);
+    const remaining = Math.max(0, limit - entry.used);
+    const periodEnd = getTenantQuotaPeriodEnd(entry.periodStart);
+    return {
+      entry,
+      limit,
+      remaining,
+      periodEnd
+    };
+  };
+
+  const getRefilledTenantRateState = (tenantId: string, nowMs: number) => {
+    const existing = tenantRateLimitState.get(tenantId) ?? {
+      tokens: tenantRateLimitCapacity,
+      lastRefillAt: nowMs
+    };
+    const elapsedMs = Math.max(0, nowMs - existing.lastRefillAt);
+    const refillTokens =
+      tenantRateLimitCapacity > 0
+        ? (elapsedMs * tenantRateLimitCapacity) / tenantRateLimitWindowMs
+        : 0;
+    return {
+      tokens: Math.min(tenantRateLimitCapacity, existing.tokens + refillTokens),
+      lastRefillAt: nowMs
+    };
+  };
+
+  const computeRateLimitResetEpochSeconds = (tokens: number, nowMs: number) => {
+    if (tenantRateLimitCapacity <= 0) {
+      return Math.ceil(nowMs / 1000);
+    }
+    const msUntilFull = Math.ceil(
+      ((tenantRateLimitCapacity - tokens) * tenantRateLimitWindowMs) /
+        tenantRateLimitCapacity
+    );
+    return Math.ceil((nowMs + Math.max(msUntilFull, 0)) / 1000);
+  };
+
+  const computeRateRetryAfterSeconds = (tokens: number) => {
+    if (tenantRateLimitCapacity <= 0 || tokens >= 1) {
+      return 0;
+    }
+    const retryAfterMs =
+      ((1 - tokens) * tenantRateLimitWindowMs) / tenantRateLimitCapacity;
+    return Math.max(1, Math.ceil(retryAfterMs / 1000));
+  };
+
+  const peekTenantRateLimit = (tenantId: string, nowMs: number) => {
+    if (tenantRateLimitCapacity <= 0) {
+      return {
+        limit: 0,
+        remaining: 0,
+        resetEpochSeconds: Math.ceil(nowMs / 1000),
+        retryAfterSeconds: 0
+      };
+    }
+    const refilledState = getRefilledTenantRateState(tenantId, nowMs);
+    tenantRateLimitState.set(tenantId, refilledState);
+    return {
+      limit: tenantRateLimitCapacity,
+      remaining: Math.max(0, Math.floor(refilledState.tokens)),
+      resetEpochSeconds: computeRateLimitResetEpochSeconds(
+        refilledState.tokens,
+        nowMs
+      ),
+      retryAfterSeconds: computeRateRetryAfterSeconds(refilledState.tokens)
+    };
+  };
+
+  const consumeTenantRateLimit = (tenantId: string, nowMs: number) => {
+    if (tenantRateLimitCapacity <= 0) {
+      return {
+        limited: false,
+        limit: 0,
+        remaining: 0,
+        resetEpochSeconds: Math.ceil(nowMs / 1000),
+        retryAfterSeconds: 0
+      };
+    }
+    const refilledState = getRefilledTenantRateState(tenantId, nowMs);
+    if (refilledState.tokens < 1) {
+      tenantRateLimitState.set(tenantId, refilledState);
+      const retryAfterSeconds = computeRateRetryAfterSeconds(refilledState.tokens);
+      return {
+        limited: true,
+        limit: tenantRateLimitCapacity,
+        remaining: 0,
+        resetEpochSeconds: Math.ceil((nowMs + retryAfterSeconds * 1000) / 1000),
+        retryAfterSeconds
+      };
+    }
+    const updatedState = {
+      tokens: refilledState.tokens - 1,
+      lastRefillAt: nowMs
+    };
+    tenantRateLimitState.set(tenantId, updatedState);
+    return {
+      limited: false,
+      limit: tenantRateLimitCapacity,
+      remaining: Math.max(0, Math.floor(updatedState.tokens)),
+      resetEpochSeconds: computeRateLimitResetEpochSeconds(
+        updatedState.tokens,
+        nowMs
+      ),
+      retryAfterSeconds: 0
+    };
+  };
+
+  const setTenantLimitHeaders = (
+    reply: { header: (key: string, value: string) => unknown },
+    input: {
+      rateLimit: number;
+      rateRemaining: number;
+      rateResetEpochSeconds: number;
+      quotaLimit: number;
+      quotaRemaining: number;
+      quotaPeriodEnd: string;
+    }
+  ) => {
+    reply.header("X-RateLimit-Limit", String(input.rateLimit));
+    reply.header("X-RateLimit-Remaining", String(Math.max(0, input.rateRemaining)));
+    reply.header("X-RateLimit-Reset", String(input.rateResetEpochSeconds));
+    reply.header("X-Quota-Limit", String(Math.max(0, input.quotaLimit)));
+    reply.header("X-Quota-Remaining", String(Math.max(0, input.quotaRemaining)));
+    reply.header("X-Quota-Reset", input.quotaPeriodEnd);
+  };
+
+  const enforceTenantLimits = (
+    reply: {
+      header: (key: string, value: string) => unknown;
+      code: (statusCode: number) => { send: (body: unknown) => unknown };
+    },
+    tenantId: string
+  ) => {
+    const now = new Date();
+    const nowMs = now.getTime();
+    const quota = buildTenantQuotaSnapshot(tenantId, now);
+    const rateSnapshot = peekTenantRateLimit(tenantId, nowMs);
+
+    if (quota.limit > 0 && quota.remaining <= 0) {
+      setTenantLimitHeaders(reply, {
+        rateLimit: rateSnapshot.limit,
+        rateRemaining: rateSnapshot.remaining,
+        rateResetEpochSeconds: rateSnapshot.resetEpochSeconds,
+        quotaLimit: quota.limit,
+        quotaRemaining: 0,
+        quotaPeriodEnd: quota.periodEnd
+      });
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil(
+          (new Date(quota.periodEnd).getTime() - nowMs) / 1000
+        )
+      );
+      reply.header("Retry-After", String(retryAfterSeconds));
+      reply.code(429).send({ error: "tenant_quota_exceeded" });
+      return undefined;
+    }
+
+    const rateResult = consumeTenantRateLimit(tenantId, nowMs);
+    if (rateResult.limited) {
+      setTenantLimitHeaders(reply, {
+        rateLimit: rateResult.limit,
+        rateRemaining: rateResult.remaining,
+        rateResetEpochSeconds: rateResult.resetEpochSeconds,
+        quotaLimit: quota.limit,
+        quotaRemaining: quota.remaining,
+        quotaPeriodEnd: quota.periodEnd
+      });
+      reply.header("Retry-After", String(rateResult.retryAfterSeconds));
+      reply.code(429).send({ error: "tenant_rate_limited" });
+      return undefined;
+    }
+
+    const updatedQuotaEntry: TenantQuotaUsage = {
+      ...quota.entry,
+      used: quota.entry.used + 1
+    };
+    tenantQuotaUsage.set(tenantId, updatedQuotaEntry);
+    queueRuntimeStatePersist();
+
+    setTenantLimitHeaders(reply, {
+      rateLimit: rateResult.limit,
+      rateRemaining: rateResult.remaining,
+      rateResetEpochSeconds: rateResult.resetEpochSeconds,
+      quotaLimit: quota.limit,
+      quotaRemaining: Math.max(0, quota.limit - updatedQuotaEntry.used),
+      quotaPeriodEnd: quota.periodEnd
+    });
+
+    return {
+      quotaLimit: quota.limit,
+      quotaPeriodEnd: quota.periodEnd,
+      quotaUsed: updatedQuotaEntry.used
+    };
+  };
 
   const recordAuditEvent = (input: {
     tenantId: string;
@@ -1972,15 +2402,21 @@ export const buildServer = async (options?: BuildServerOptions) => {
   }) => {
     const agent = agents.get(input.agentId);
     if (!agent) {
-      throw new RequestError("agent_not_found", 404);
+      throw createTypedError({
+        code: "agent_not_found",
+        statusCode: 404
+      });
     }
     const tenant = tenants.get(agent.tenantId);
     if (!tenant) {
-      throw new RequestError("tenant_not_found", 404);
+      throw createTypedError({
+        code: "tenant_not_found",
+        statusCode: 404
+      });
     }
     const queryEmbedding = buildEmbedding(input.message);
-    const minScore = input.minScore ?? 0;
-    const maxResults = input.maxResults ?? 4;
+    const minScore = input.minScore ?? agent.retrievalConfig?.minScore ?? 0;
+    const maxResults = input.maxResults ?? agent.retrievalConfig?.maxResults ?? 4;
     const sourceFilter = input.sourceIds ? new Set(input.sourceIds) : undefined;
     const retrievalMatches = await vectorStore.query(tenant.region, {
       agentId: input.agentId,
@@ -2135,15 +2571,14 @@ export const buildServer = async (options?: BuildServerOptions) => {
         output
       };
     } catch (error) {
-      if (error instanceof ActionExecutionError) {
-        fastify.log.warn(
-          {
-            actionId: action.id,
-            agentId: input.agentId,
-            error: error.message
-          },
-          "automatic escalation failed"
-        );
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        apiLogger.warn("automatic_escalation_failed", {
+          actionId: action.id,
+          agentId: input.agentId,
+          error: serialized.error,
+          statusCode: serialized.statusCode
+        });
         return undefined;
       }
       throw error;
@@ -2703,6 +3138,64 @@ export const buildServer = async (options?: BuildServerOptions) => {
     return { policy, removed };
   });
 
+  fastify.post("/admin/tenants/:tenantId/quota", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "admin");
+    if (!access) {
+      return;
+    }
+    const update = tenantQuotaUpdateSchema.parse(request.body);
+    const now = new Date();
+    const current = ensureTenantQuotaEntry(tenantId, now);
+    const next: TenantQuotaUsage = {
+      ...current
+    };
+
+    if (update.limit !== undefined) {
+      next.quotaLimit = update.limit;
+    }
+    if (update.reset) {
+      next.used = 0;
+      next.periodStart = getTenantQuotaPeriodStart(now);
+      tenantRateLimitState.delete(tenantId);
+    }
+    const nextLimit = getTenantQuotaLimit(next);
+    if (update.used !== undefined) {
+      next.used = Math.min(update.used, nextLimit);
+    } else {
+      next.used = Math.min(next.used, nextLimit);
+    }
+    tenantQuotaUsage.set(tenantId, next);
+    queueRuntimeStatePersist();
+
+    const snapshot = buildTenantQuotaSnapshot(tenantId, now);
+    recordAuditEvent({
+      tenantId,
+      actorId: access.userId,
+      action: "quota.updated",
+      metadata: {
+        reset: update.reset ?? false,
+        used: snapshot.entry.used,
+        limit: snapshot.limit
+      }
+    });
+
+    return {
+      tenantId,
+      quota: {
+        used: snapshot.entry.used,
+        limit: snapshot.limit,
+        remaining: snapshot.remaining,
+        periodStart: snapshot.entry.periodStart,
+        periodEnd: snapshot.periodEnd
+      }
+    };
+  });
+
   fastify.post("/tenants/:tenantId/gdpr/deletion-requests", async (request, reply) => {
     const paramsSchema = z.object({ tenantId: z.string().min(1) });
     const { tenantId } = paramsSchema.parse(request.params);
@@ -2831,6 +3324,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
       name: data.name,
       basePrompt: data.basePrompt,
       model: data.model,
+      retrievalConfig: data.retrievalConfig,
       status: "draft",
       createdAt: new Date().toISOString()
     };
@@ -2850,6 +3344,38 @@ export const buildServer = async (options?: BuildServerOptions) => {
     return { items };
   });
 
+  fastify.patch("/agents/:agentId", async (request, reply) => {
+    const paramsSchema = z.object({ agentId: z.string().min(1) });
+    const { agentId } = paramsSchema.parse(request.params);
+    const parsedBody = agentSettingsUpdateSchema.safeParse(request.body);
+    if (!parsedBody.success) {
+      return reply.code(400).send({ error: "invalid_agent_settings" });
+    }
+    const existingAgent = agents.get(agentId);
+    if (!existingAgent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const access = requireTenantRole(request, reply, existingAgent.tenantId, "admin");
+    if (!access) {
+      return;
+    }
+    const updatedAgent: Agent = {
+      ...existingAgent,
+      ...parsedBody.data
+    };
+    agents.set(existingAgent.id, updatedAgent);
+    recordAuditEvent({
+      tenantId: existingAgent.tenantId,
+      actorId: access.userId,
+      action: "agent.settings_updated",
+      targetId: existingAgent.id,
+      metadata: {
+        updatedFields: Object.keys(parsedBody.data)
+      }
+    });
+    return { agent: updatedAgent };
+  });
+
   fastify.post("/actions", async (request, reply) => {
     const data = actionSchema.parse(request.body);
     if (!agents.has(data.agentId)) {
@@ -2867,8 +3393,12 @@ export const buildServer = async (options?: BuildServerOptions) => {
     try {
       normalizedConfig = normalizeActionConfig(data.type, data.config);
     } catch (error) {
-      if (error instanceof ActionExecutionError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        return reply.code(serialized.statusCode).send({
+          error: serialized.error,
+          ...(serialized.details ? { details: serialized.details } : {})
+        });
       }
       throw error;
     }
@@ -2949,6 +3479,10 @@ export const buildServer = async (options?: BuildServerOptions) => {
     if (!action.enabled) {
       return reply.code(403).send({ error: "action_disabled" });
     }
+    const limit = enforceTenantLimits(reply, tenantId);
+    if (!limit) {
+      return;
+    }
     const payload =
       request.body && typeof request.body === "object"
         ? (request.body as Record<string, unknown>)
@@ -2985,8 +3519,12 @@ export const buildServer = async (options?: BuildServerOptions) => {
       });
       return { execution };
     } catch (error) {
-      if (error instanceof ActionExecutionError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        return reply.code(serialized.statusCode).send({
+          error: serialized.error,
+          ...(serialized.details ? { details: serialized.details } : {})
+        });
       }
       throw error;
     }
@@ -3154,6 +3692,14 @@ export const buildServer = async (options?: BuildServerOptions) => {
     if (!authResult.ok) {
       return reply.code(authResult.statusCode).send({ error: authResult.error });
     }
+    const tenantId = getTenantIdForAgent(channel.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const limit = enforceTenantLimits(reply, tenantId);
+    if (!limit) {
+      return;
+    }
     const payload = request.body;
     if (!isRecord(payload)) {
       return reply.code(400).send({ error: "invalid_payload" });
@@ -3214,8 +3760,12 @@ export const buildServer = async (options?: BuildServerOptions) => {
         metadata: parsed.message.metadata
       });
     } catch (error) {
-      if (error instanceof RequestError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        return reply.code(serialized.statusCode).send({
+          error: serialized.error,
+          ...(serialized.details ? { details: serialized.details } : {})
+        });
       }
       throw error;
     }
@@ -3451,6 +4001,37 @@ export const buildServer = async (options?: BuildServerOptions) => {
               message: runtimePersistenceObservability.lastFailureMessage
             }
           : null
+      };
+  });
+
+  fastify.get("/diagnostics/quota/:tenantId", async (request, reply) => {
+    const paramsSchema = z.object({ tenantId: z.string().min(1) });
+    const { tenantId } = paramsSchema.parse(request.params);
+    if (!tenants.has(tenantId)) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "viewer");
+    if (!access) {
+      return reply;
+    }
+    const nowMs = Date.now();
+    const quota = buildTenantQuotaSnapshot(tenantId);
+    const rate = peekTenantRateLimit(tenantId, nowMs);
+    return {
+      tenantId,
+      quota: {
+        used: quota.entry.used,
+        limit: quota.limit,
+        remaining: quota.remaining,
+        periodStart: quota.entry.periodStart,
+        periodEnd: quota.periodEnd
+      },
+      rateLimit: {
+        limit: rate.limit,
+        remaining: rate.remaining,
+        resetEpochSeconds: rate.resetEpochSeconds,
+        windowMs: tenantRateLimitWindowMs
+      }
     };
   });
 
@@ -3862,6 +4443,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
     if (!userId) {
       return reply;
     }
+    await refreshIngestionJobsFromRuntimeState();
     const allowedTenantIds = getTenantIdsForUser(userId);
 
     if (data.agentId) {
@@ -3899,6 +4481,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
   fastify.get("/ingestion-jobs/:id", async (request, reply) => {
     const paramsSchema = z.object({ id: z.string().min(1) });
     const { id } = paramsSchema.parse(request.params);
+    await refreshIngestionJobsFromRuntimeState();
     const job = ingestionJobs.get(id);
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
@@ -3927,6 +4510,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
     });
     const { id } = paramsSchema.parse(request.params);
     const { status, startedAt, completedAt } = bodySchema.parse(request.body);
+    await refreshIngestionJobsFromRuntimeState();
     const job = ingestionJobs.get(id);
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
@@ -4010,6 +4594,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
     const paramsSchema = z.object({ id: z.string().min(1) });
     const { id } = paramsSchema.parse(request.params);
     const data = jobIngestionSchema.parse(request.body);
+    await refreshIngestionJobsFromRuntimeState();
     const job = ingestionJobs.get(id);
     if (!job) {
       return reply.code(404).send({ error: "job_not_found" });
@@ -4360,9 +4945,13 @@ export const buildServer = async (options?: BuildServerOptions) => {
     if (!tenant) {
       return reply.code(404).send({ error: "tenant_not_found" });
     }
+    const limit = enforceTenantLimits(reply, tenant.id);
+    if (!limit) {
+      return;
+    }
     const queryEmbedding = buildEmbedding(data.query);
-    const minScore = data.minScore ?? 0;
-    const maxResults = data.maxResults ?? 5;
+    const minScore = data.minScore ?? agent.retrievalConfig?.minScore ?? 0;
+    const maxResults = data.maxResults ?? agent.retrievalConfig?.maxResults ?? 5;
     const sourceFilter = data.sourceIds
       ? new Set(data.sourceIds)
       : undefined;
@@ -4431,6 +5020,14 @@ export const buildServer = async (options?: BuildServerOptions) => {
 
     if (!agentId) {
       return reply.code(400).send({ error: "agent_or_channel_required" });
+    }
+    const agent = agents.get(agentId);
+    if (!agent) {
+      return reply.code(404).send({ error: "agent_not_found" });
+    }
+    const limit = enforceTenantLimits(reply, agent.tenantId);
+    if (!limit) {
+      return;
     }
 
     let conversation: Conversation | undefined;
@@ -4521,8 +5118,12 @@ export const buildServer = async (options?: BuildServerOptions) => {
         conversationId: conversation?.id
       });
     } catch (error) {
-      if (error instanceof RequestError) {
-        return reply.code(error.statusCode).send({ error: error.message });
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        return reply.code(serialized.statusCode).send({
+          error: serialized.error,
+          ...(serialized.details ? { details: serialized.details } : {})
+        });
       }
       throw error;
     }

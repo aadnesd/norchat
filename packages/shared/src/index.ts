@@ -173,13 +173,27 @@ export type CrawlConfig = {
 
 export type IngestionJobStatus = "queued" | "processing" | "complete" | "failed";
 
+export type IngestionJobError = {
+  message: string;
+  transient: boolean;
+  attempts: number;
+  at: string;
+};
+
 export type IngestionJob = {
   id: string;
   sourceId: string;
-  kind: "crawl" | "file" | "text" | "qa" | "notion";
+  kind: "crawl" | "file" | "text" | "qa" | "notion" | "retrain" | "action";
   status: IngestionJobStatus;
   createdAt: string;
+  startedAt?: string;
   completedAt?: string;
+  durationMs?: number;
+  slaMet?: boolean;
+  attempts?: number;
+  maxAttempts?: number;
+  nextAttemptAt?: string;
+  lastError?: IngestionJobError;
 };
 
 export type IngestionJobBundle = {
@@ -357,6 +371,155 @@ export type ApiListResponse<T> = {
 };
 
 export type ApiResponse<T> = T | ApiError;
+
+export type StructuredLogLevel = "debug" | "info" | "warn" | "error";
+
+export type StructuredLogContext = {
+  traceId?: string;
+  tenantId?: string;
+  userId?: string;
+} & Record<string, unknown>;
+
+export type StructuredLogEntry = {
+  timestamp: string;
+  level: StructuredLogLevel;
+  message: string;
+  service?: string;
+} & StructuredLogContext;
+
+export type StructuredLogSink = (entry: StructuredLogEntry) => void;
+
+export type StructuredLogger = {
+  debug: (message: string, context?: StructuredLogContext) => void;
+  info: (message: string, context?: StructuredLogContext) => void;
+  warn: (message: string, context?: StructuredLogContext) => void;
+  error: (message: string, context?: StructuredLogContext) => void;
+  child: (context: StructuredLogContext) => StructuredLogger;
+};
+
+const normalizeLogContext = (context?: StructuredLogContext): StructuredLogContext => {
+  if (!context) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(context).filter(([, value]) => value !== undefined)
+  );
+};
+
+const defaultLogSink: StructuredLogSink = (entry) => {
+  console.log(JSON.stringify(entry));
+};
+
+export const createStructuredLogger = (options?: {
+  service?: string;
+  context?: StructuredLogContext;
+  sink?: StructuredLogSink;
+}): StructuredLogger => {
+  const baseContext = normalizeLogContext(options?.context);
+  const sink = options?.sink ?? defaultLogSink;
+
+  const emit = (
+    level: StructuredLogLevel,
+    message: string,
+    context?: StructuredLogContext
+  ) => {
+    sink({
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...(options?.service ? { service: options.service } : {}),
+      ...baseContext,
+      ...normalizeLogContext(context)
+    });
+  };
+
+  return {
+    debug: (message, context) => emit("debug", message, context),
+    info: (message, context) => emit("info", message, context),
+    warn: (message, context) => emit("warn", message, context),
+    error: (message, context) => emit("error", message, context),
+    child: (context) =>
+      createStructuredLogger({
+        service: options?.service,
+        sink,
+        context: { ...baseContext, ...normalizeLogContext(context) }
+      })
+  };
+};
+
+export type TypedErrorInput = {
+  code: string;
+  message?: string;
+  statusCode?: number;
+  details?: Record<string, unknown>;
+  cause?: unknown;
+};
+
+export class TypedError extends Error {
+  code: string;
+  statusCode: number;
+  details?: Record<string, unknown>;
+
+  constructor(input: TypedErrorInput) {
+    super(input.message ?? input.code);
+    this.name = "TypedError";
+    this.code = input.code;
+    this.statusCode = input.statusCode ?? 400;
+    this.details = input.details;
+    if (input.cause !== undefined) {
+      this.cause = input.cause;
+    }
+  }
+}
+
+export const createTypedError = (input: TypedErrorInput) => new TypedError(input);
+
+export const isTypedError = (value: unknown): value is TypedError =>
+  value instanceof TypedError;
+
+export type SerializedTypedError = ApiError & {
+  statusCode: number;
+  cause?: string;
+};
+
+const serializeCause = (cause: unknown): string | undefined => {
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  if (typeof cause === "string") {
+    return cause;
+  }
+  return undefined;
+};
+
+export const serializeTypedError = (
+  error: unknown,
+  fallback: { code?: string; statusCode?: number } = {}
+): SerializedTypedError => {
+  const fallbackCode = fallback.code ?? "internal_error";
+  const fallbackStatus = fallback.statusCode ?? 500;
+  if (isTypedError(error)) {
+    return {
+      error: error.code,
+      message: error.message,
+      ...(error.details ? { details: error.details } : {}),
+      ...(error.cause ? { cause: serializeCause(error.cause) } : {}),
+      statusCode: error.statusCode
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      error: fallbackCode,
+      message: error.message,
+      statusCode: fallbackStatus
+    };
+  }
+  return {
+    error: fallbackCode,
+    statusCode: fallbackStatus
+  };
+};
 
 export type NotionSourceCreateInput = {
   agentId: string;

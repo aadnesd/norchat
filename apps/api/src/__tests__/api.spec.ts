@@ -467,6 +467,105 @@ describe("api routes", () => {
     expect(completeBody.job.slaMet).toBe(false);
   });
 
+  it("reflects worker-persisted ingestion job updates in job status APIs", async () => {
+    const tenantResponse = await adminInject({
+      method: "POST",
+      url: "/tenants",
+      payload: {
+        name: "Ålesund Support",
+        region: "no"
+      }
+    });
+    const tenant = tenantResponse.json();
+
+    const agentResponse = await adminInject({
+      method: "POST",
+      url: "/agents",
+      payload: {
+        tenantId: tenant.id,
+        name: "Worker Sync Agent"
+      }
+    });
+    const agent = agentResponse.json();
+
+    const fileResponse = await adminInject({
+      method: "POST",
+      url: "/sources/file",
+      payload: {
+        agentId: agent.id,
+        filename: "worker-sync.pdf",
+        contentType: "application/pdf",
+        sizeBytes: 256
+      }
+    });
+    expect(fileResponse.statusCode).toBe(201);
+    const fileBody = fileResponse.json();
+    const runtimeStateFile = path.join(runtimeStoreDir, "runtime-state.json");
+
+    let runtimeState:
+      | (Record<string, unknown> & { ingestionJobs?: Array<Record<string, unknown>> })
+      | undefined;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const raw = await readFile(runtimeStateFile, "utf8").catch(() => undefined);
+      if (!raw) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 10);
+        });
+        continue;
+      }
+      const parsed = JSON.parse(raw) as Record<string, unknown> & {
+        ingestionJobs?: Array<Record<string, unknown>>;
+      };
+      if (
+        Array.isArray(parsed.ingestionJobs) &&
+        parsed.ingestionJobs.some((job) => job.id === fileBody.job.id)
+      ) {
+        runtimeState = parsed;
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 10);
+      });
+    }
+
+    expect(runtimeState).toBeDefined();
+    if (!runtimeState || !Array.isArray(runtimeState.ingestionJobs)) {
+      throw new Error("runtime state ingestion job missing");
+    }
+
+    const completedAt = new Date().toISOString();
+    runtimeState.ingestionJobs = runtimeState.ingestionJobs.map((job) =>
+      job.id === fileBody.job.id
+        ? {
+            ...job,
+            status: "complete",
+            attempts: 1,
+            startedAt: completedAt,
+            completedAt,
+            durationMs: 0,
+            slaMet: true,
+            nextAttemptAt: undefined,
+            lastError: undefined
+          }
+        : job
+    );
+    await fsPromises.writeFile(runtimeStateFile, JSON.stringify(runtimeState), "utf8");
+
+    const singleResponse = await adminInject({
+      method: "GET",
+      url: `/ingestion-jobs/${fileBody.job.id}`
+    });
+    expect(singleResponse.statusCode).toBe(200);
+    expect(singleResponse.json().job.status).toBe("complete");
+
+    const listResponse = await adminInject({
+      method: "GET",
+      url: `/ingestion-jobs?sourceId=${fileBody.source.id}`
+    });
+    expect(listResponse.statusCode).toBe(200);
+    expect(listResponse.json().items[0]?.status).toBe("complete");
+  });
+
   it("persists ingestion jobs, metrics, and audit runtime state across restarts", async () => {
     const restartVectorStoreDir = await mkdtemp(
       path.join(tmpdir(), "vector-store-restart-")
@@ -555,6 +654,16 @@ describe("api routes", () => {
       });
       expect(metricResponse.statusCode).toBe(201);
 
+      const quotaResponse = await injectFirst({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Hvordan går det?"
+        }
+      });
+      expect(quotaResponse.statusCode).toBe(200);
+
       await firstServer.close();
       firstServer = undefined;
 
@@ -564,6 +673,7 @@ describe("api routes", () => {
         ingestionJobs: Array<{ id: string }>;
         metricEvents: Array<{ type: string }>;
         auditEvents: Array<{ action: string }>;
+        tenantQuotaUsage: Array<{ tenantId: string; used: number }>;
       };
       expect(
         persisted.ingestionJobs.some((job) => job.id === sourceBody.job.id)
@@ -575,6 +685,11 @@ describe("api routes", () => {
       ).toBe(true);
       expect(
         persisted.auditEvents.some((event) => event.action === "tenant.created")
+      ).toBe(true);
+      expect(
+        persisted.tenantQuotaUsage.some(
+          (entry) => entry.tenantId === tenant.id && entry.used >= 1
+        )
       ).toBe(true);
 
       secondServer = await buildServer({
@@ -613,6 +728,86 @@ describe("api routes", () => {
       }
       await rm(restartRuntimeStoreDir, { recursive: true, force: true });
       await rm(restartVectorStoreDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads runtime state caps from environment variables", async () => {
+    const capVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-caps-")
+    );
+    const capRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-caps-")
+    );
+    const runtimeStateFile = path.join(capRuntimeStoreDir, "runtime-state.json");
+    const previousMetricCap = process.env.RUNTIME_STATE_MAX_METRIC_EVENTS;
+    const previousAuditCap = process.env.RUNTIME_STATE_MAX_AUDIT_EVENTS;
+    process.env.RUNTIME_STATE_MAX_METRIC_EVENTS = "2";
+    process.env.RUNTIME_STATE_MAX_AUDIT_EVENTS = "3";
+
+    const seededMetrics = Array.from({ length: 5 }, (_, index) => ({
+      id: `metric_${index}`,
+      type: "retrieval_performed",
+      tenantId: "tenant_caps",
+      timestamp: new Date(2026, 0, 1, 0, 0, index).toISOString()
+    }));
+    const seededAudits = Array.from({ length: 4 }, (_, index) => ({
+      id: `audit_${index}`,
+      tenantId: "tenant_caps",
+      actorId: "user_caps",
+      action: `action_${index}`,
+      createdAt: new Date(2026, 0, 1, 0, 1, index).toISOString()
+    }));
+
+    let capServer: FastifyInstance | undefined;
+    try {
+      await fsPromises.mkdir(path.dirname(runtimeStateFile), { recursive: true });
+      await fsPromises.writeFile(
+        runtimeStateFile,
+        JSON.stringify({
+          ingestionJobs: [],
+          metricEvents: seededMetrics,
+          auditEvents: seededAudits
+        }),
+        "utf8"
+      );
+
+      capServer = await buildServer({
+        vectorStoreDir: capVectorStoreDir,
+        runtimeStoreDir: capRuntimeStoreDir
+      });
+      await capServer.ready();
+      await capServer.close();
+      capServer = undefined;
+
+      const persisted = JSON.parse(await readFile(runtimeStateFile, "utf8")) as {
+        metricEvents: Array<{ id: string }>;
+        auditEvents: Array<{ id: string }>;
+      };
+      expect(persisted.metricEvents.map((event) => event.id)).toEqual([
+        "metric_3",
+        "metric_4"
+      ]);
+      expect(persisted.auditEvents.map((event) => event.id)).toEqual([
+        "audit_1",
+        "audit_2",
+        "audit_3"
+      ]);
+    } finally {
+      if (capServer) {
+        await capServer.close();
+      }
+      if (previousMetricCap === undefined) {
+        delete process.env.RUNTIME_STATE_MAX_METRIC_EVENTS;
+      } else {
+        process.env.RUNTIME_STATE_MAX_METRIC_EVENTS = previousMetricCap;
+      }
+      if (previousAuditCap === undefined) {
+        delete process.env.RUNTIME_STATE_MAX_AUDIT_EVENTS;
+      } else {
+        process.env.RUNTIME_STATE_MAX_AUDIT_EVENTS = previousAuditCap;
+      }
+      await rm(capRuntimeStoreDir, { recursive: true, force: true });
+      await rm(capVectorStoreDir, { recursive: true, force: true });
     }
   });
 
@@ -3452,5 +3647,233 @@ describe("api routes", () => {
     expect(body.prompt).toContain("https://docs.example.no/api");
     // Should NOT contain the raw source ID in the prompt
     expect(body.prompt).not.toContain(source.id);
+  });
+
+  it("enforces tenant-scoped limits with diagnostics and admin quota reset", async () => {
+    const limitVectorStoreDir = await mkdtemp(
+      path.join(tmpdir(), "vector-store-tenant-limit-")
+    );
+    const limitRuntimeStoreDir = await mkdtemp(
+      path.join(tmpdir(), "runtime-store-tenant-limit-")
+    );
+    const previousEnv = {
+      rateCapacity: process.env.TENANT_RATE_LIMIT_CAPACITY,
+      rateWindowMs: process.env.TENANT_RATE_LIMIT_WINDOW_MS,
+      monthlyQuota: process.env.TENANT_MONTHLY_QUOTA
+    };
+    process.env.TENANT_RATE_LIMIT_CAPACITY = "2";
+    process.env.TENANT_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.TENANT_MONTHLY_QUOTA = "10";
+
+    let limitServer: FastifyInstance | undefined;
+    try {
+      limitServer = await buildServer({
+        vectorStoreDir: limitVectorStoreDir,
+        runtimeStoreDir: limitRuntimeStoreDir
+      });
+      await limitServer.ready();
+
+      const injectAsUser = (userId: string, options: InjectOptions) =>
+        limitServer!.inject({
+          ...options,
+          headers: {
+            ...options.headers,
+            "x-user-id": userId
+          }
+        });
+      const ownerInject = (options: InjectOptions) =>
+        injectAsUser("user_tenant_limit_owner", options);
+
+      const tenantResponse = await ownerInject({
+        method: "POST",
+        url: "/tenants",
+        payload: {
+          name: "Tenant Limit Test",
+          region: "no"
+        }
+      });
+      expect(tenantResponse.statusCode).toBe(201);
+      const tenant = tenantResponse.json();
+
+      const agentResponse = await ownerInject({
+        method: "POST",
+        url: "/agents",
+        payload: {
+          tenantId: tenant.id,
+          name: "Tenant Limit Agent"
+        }
+      });
+      expect(agentResponse.statusCode).toBe(201);
+      const agent = agentResponse.json();
+
+      const firstChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Hei, jeg trenger hjelp"
+        }
+      });
+      expect(firstChat.statusCode).toBe(200);
+      expect(firstChat.headers["x-ratelimit-limit"]).toBe("2");
+      expect(firstChat.headers["x-ratelimit-remaining"]).toBe("1");
+      expect(firstChat.headers["x-quota-limit"]).toBe("10");
+      expect(firstChat.headers["x-quota-remaining"]).toBe("9");
+
+      const secondChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Hva er åpningstidene?"
+        }
+      });
+      expect(secondChat.statusCode).toBe(200);
+      expect(secondChat.headers["x-ratelimit-remaining"]).toBe("0");
+
+      const rateLimitedChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Er du der?"
+        }
+      });
+      expect(rateLimitedChat.statusCode).toBe(429);
+      expect(rateLimitedChat.json().error).toBe("tenant_rate_limited");
+      expect(rateLimitedChat.headers["retry-after"]).toBeDefined();
+      expect(rateLimitedChat.headers["x-ratelimit-limit"]).toBe("2");
+      expect(rateLimitedChat.headers["x-ratelimit-remaining"]).toBe("0");
+
+      const secondTenantResponse = await ownerInject({
+        method: "POST",
+        url: "/tenants",
+        payload: {
+          name: "Tenant Limit Isolated",
+          region: "no"
+        }
+      });
+      expect(secondTenantResponse.statusCode).toBe(201);
+      const secondTenant = secondTenantResponse.json();
+
+      const secondAgentResponse = await ownerInject({
+        method: "POST",
+        url: "/agents",
+        payload: {
+          tenantId: secondTenant.id,
+          name: "Tenant Limit Agent 2"
+        }
+      });
+      expect(secondAgentResponse.statusCode).toBe(201);
+      const secondAgent = secondAgentResponse.json();
+
+      const secondTenantChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: secondAgent.id,
+          message: "Er denne tenant-en isolert?"
+        }
+      });
+      expect(secondTenantChat.statusCode).toBe(200);
+      expect(secondTenantChat.headers["x-ratelimit-remaining"]).toBe("1");
+
+      const diagnosticsAfterRateLimit = await ownerInject({
+        method: "GET",
+        url: `/diagnostics/quota/${tenant.id}`
+      });
+      expect(diagnosticsAfterRateLimit.statusCode).toBe(200);
+      const diagnosticsRateBody = diagnosticsAfterRateLimit.json();
+      expect(diagnosticsRateBody.quota.used).toBe(2);
+      expect(diagnosticsRateBody.quota.remaining).toBe(8);
+      expect(diagnosticsRateBody.rateLimit.limit).toBe(2);
+
+      const overrideQuota = await ownerInject({
+        method: "POST",
+        url: `/admin/tenants/${tenant.id}/quota`,
+        payload: {
+          reset: true,
+          limit: 1
+        }
+      });
+      expect(overrideQuota.statusCode).toBe(200);
+      expect(overrideQuota.json().quota.used).toBe(0);
+      expect(overrideQuota.json().quota.limit).toBe(1);
+
+      const quotaAllowedChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Kan du hjelpe med retur?"
+        }
+      });
+      expect(quotaAllowedChat.statusCode).toBe(200);
+      expect(quotaAllowedChat.headers["x-quota-remaining"]).toBe("0");
+
+      const quotaLimitedChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "En melding til"
+        }
+      });
+      expect(quotaLimitedChat.statusCode).toBe(429);
+      expect(quotaLimitedChat.json().error).toBe("tenant_quota_exceeded");
+      expect(quotaLimitedChat.headers["retry-after"]).toBeDefined();
+      expect(quotaLimitedChat.headers["x-ratelimit-limit"]).toBe("2");
+
+      const diagnosticsAfterQuotaLimit = await ownerInject({
+        method: "GET",
+        url: `/diagnostics/quota/${tenant.id}`
+      });
+      expect(diagnosticsAfterQuotaLimit.statusCode).toBe(200);
+      const diagnosticsQuotaBody = diagnosticsAfterQuotaLimit.json();
+      expect(diagnosticsQuotaBody.quota.used).toBe(1);
+      expect(diagnosticsQuotaBody.quota.limit).toBe(1);
+      expect(diagnosticsQuotaBody.quota.remaining).toBe(0);
+
+      const resetQuota = await ownerInject({
+        method: "POST",
+        url: `/admin/tenants/${tenant.id}/quota`,
+        payload: {
+          reset: true
+        }
+      });
+      expect(resetQuota.statusCode).toBe(200);
+      expect(resetQuota.json().quota.used).toBe(0);
+
+      const postResetChat = await ownerInject({
+        method: "POST",
+        url: "/chat",
+        payload: {
+          agentId: agent.id,
+          message: "Takk!"
+        }
+      });
+      expect(postResetChat.statusCode).toBe(200);
+    } finally {
+      if (limitServer) {
+        await limitServer.close();
+      }
+      await rm(limitRuntimeStoreDir, { recursive: true, force: true });
+      await rm(limitVectorStoreDir, { recursive: true, force: true });
+      if (previousEnv.rateCapacity === undefined) {
+        delete process.env.TENANT_RATE_LIMIT_CAPACITY;
+      } else {
+        process.env.TENANT_RATE_LIMIT_CAPACITY = previousEnv.rateCapacity;
+      }
+      if (previousEnv.rateWindowMs === undefined) {
+        delete process.env.TENANT_RATE_LIMIT_WINDOW_MS;
+      } else {
+        process.env.TENANT_RATE_LIMIT_WINDOW_MS = previousEnv.rateWindowMs;
+      }
+      if (previousEnv.monthlyQuota === undefined) {
+        delete process.env.TENANT_MONTHLY_QUOTA;
+      } else {
+        process.env.TENANT_MONTHLY_QUOTA = previousEnv.monthlyQuota;
+      }
+    }
   });
 });

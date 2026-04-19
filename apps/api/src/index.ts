@@ -3692,18 +3692,13 @@ export const buildServer = async (options?: BuildServerOptions) => {
     if (!authResult.ok) {
       return reply.code(authResult.statusCode).send({ error: authResult.error });
     }
-    const tenantId = getTenantIdForAgent(channel.agentId);
-    if (!tenantId) {
-      return reply.code(404).send({ error: "tenant_not_found" });
-    }
-    const limit = enforceTenantLimits(reply, tenantId);
-    if (!limit) {
-      return;
-    }
     const payload = request.body;
     if (!isRecord(payload)) {
       return reply.code(400).send({ error: "invalid_payload" });
     }
+    // Parse BEFORE rate limiting so that Slack URL-verification challenges and
+    // ignored connector events (retries, bot-echoes, etc.) cannot be throttled
+    // or consume tenant quota. Only genuine inbound messages should count.
     const parsed = parseChannelWebhookPayload(channel.type, payload);
     if (parsed.kind === "challenge") {
       return reply.send({ challenge: parsed.challenge });
@@ -3713,6 +3708,14 @@ export const buildServer = async (options?: BuildServerOptions) => {
     }
     if (parsed.kind === "error") {
       return reply.code(400).send({ error: parsed.error });
+    }
+    const tenantId = getTenantIdForAgent(channel.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const limit = enforceTenantLimits(reply, tenantId);
+    if (!limit) {
+      return;
     }
     try {
       const conversation = getOrCreateConversation({

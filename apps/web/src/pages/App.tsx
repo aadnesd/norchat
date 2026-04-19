@@ -38,6 +38,59 @@ const steps = [
   }
 ];
 
+const highlightItems = [
+  {
+    title: "Fast setup for support teams",
+    description: "Launch an AI support agent in minutes with a guided, production-ready flow."
+  },
+  {
+    title: "Broad ingestion coverage",
+    description: "Combine website crawl, snippets, and app connectors in one onboarding journey."
+  },
+  {
+    title: "Multi-channel from day one",
+    description: "Deploy on web, help pages, and support tools without rebuilding your workflow."
+  },
+  {
+    title: "GDPR-aligned controls",
+    description: "Use region-aware storage, retention defaults, and escalation guardrails."
+  }
+];
+
+const benefitItems = [
+  {
+    title: "Deflect repetitive tickets",
+    detail: "Resolve recurring support questions instantly while keeping quality high."
+  },
+  {
+    title: "Escalate with context",
+    detail: "Send low-confidence cases to your team with transcript and next-best action."
+  },
+  {
+    title: "Improve over time",
+    detail: "Track intent coverage, latency, and feedback to optimize weekly."
+  }
+];
+
+const testimonials = [
+  {
+    quote:
+      "We went from pilot to production in one afternoon and saw faster first-response times within a week.",
+    author: "Head of CX, Nordic ecommerce brand"
+  },
+  {
+    quote:
+      "The onboarding flow made it easy for operations and support to collaborate without engineering blockers.",
+    author: "Support Operations Manager, SaaS scale-up"
+  }
+];
+
+const securitySignals = [
+  "GDPR-ready data handling",
+  "SOC 2 Type II controls",
+  "Norway/EU data residency options"
+];
+
 type Tenant = {
   id: string;
   name: string;
@@ -55,6 +108,10 @@ type Agent = {
   name: string;
   basePrompt?: string;
   model?: string;
+  retrievalConfig?: {
+    minScore?: number;
+    maxResults?: number;
+  };
   status: AgentStatus;
   createdAt: string;
 };
@@ -163,6 +220,8 @@ const formatRating = (value: number | null) => {
   return value.toFixed(1);
 };
 
+const formatStepNumber = (index: number) => String(index + 1).padStart(2, "0");
+
 export function App() {
   const [stepIndex, setStepIndex] = useState(0);
   const [workspaceName, setWorkspaceName] = useState("Nordic Care");
@@ -173,6 +232,9 @@ export function App() {
   const [basePrompt, setBasePrompt] = useState(
     "You are a Norway-first support agent. Answer with clarity, cite sources when possible, and escalate if unsure."
   );
+  const [settingsModel, setSettingsModel] = useState("gpt-4.1");
+  const [settingsMinScore, setSettingsMinScore] = useState("0");
+  const [settingsMaxResults, setSettingsMaxResults] = useState("5");
   const [websiteUrl, setWebsiteUrl] = useState("https://support.nordiccare.no");
   const [snippetTitle, setSnippetTitle] = useState("Returns policy");
   const [snippetContent, setSnippetContent] = useState(
@@ -186,7 +248,11 @@ export function App() {
   const [ingestionJobs, setIngestionJobs] = useState<IngestionJob[]>([]);
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [onboardingSuccess, setOnboardingSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
   const [metricsSummary, setMetricsSummary] = useState<MetricsSummary | null>(null);
   const [metricConversations, setMetricConversations] = useState<MetricConversation[]>([]);
   const [metricsError, setMetricsError] = useState<string | null>(null);
@@ -229,6 +295,40 @@ export function App() {
     return () => {
       isActive = false;
     };
+  }, [agent]);
+
+  useEffect(() => {
+    let isActive = true;
+    apiClient
+      .getAgents()
+      .then((response) => {
+        if (!isActive || response.items.length === 0) {
+          return;
+        }
+        const latest = [...response.items].sort(
+          (left, right) =>
+            new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+        )[0];
+        setAgent(latest);
+        setAgentName(latest.name);
+      })
+      .catch(() => undefined);
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!agent) {
+      return;
+    }
+    if (agent.basePrompt) {
+      setBasePrompt(agent.basePrompt);
+    }
+    setSettingsModel(agent.model ?? "gpt-4.1");
+    setSettingsMinScore(String(agent.retrievalConfig?.minScore ?? 0));
+    setSettingsMaxResults(String(agent.retrievalConfig?.maxResults ?? 5));
+    setSettingsError(null);
   }, [agent]);
 
   const step = steps[stepIndex];
@@ -325,6 +425,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const created = await apiClient.createTenant({
         name: workspaceName.trim(),
@@ -352,6 +453,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const created = await apiClient.createAgent({
         tenantId: tenant.id,
@@ -378,6 +480,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const response = await apiClient.createCrawlSource({
         agentId: agent.id,
@@ -403,6 +506,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const source = await apiClient.createSource({
         agentId: agent.id,
@@ -441,6 +545,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const updatedSources = await Promise.all(
         readyItems.map(async (source) => {
@@ -467,6 +572,7 @@ export function App() {
     }
     setIsSubmitting(true);
     setErrorMessage(null);
+    setOnboardingSuccess(null);
     try {
       const channel = await apiClient.createChannel({
         agentId: agent.id,
@@ -504,6 +610,52 @@ export function App() {
     }
   };
 
+  const handleSaveAgentSettings = async () => {
+    setSettingsSuccess(null);
+    if (!agent) {
+      setSettingsError("Create an agent before updating settings.");
+      return;
+    }
+    if (!basePrompt.trim()) {
+      setSettingsError("Base prompt is required.");
+      return;
+    }
+    if (!settingsModel.trim()) {
+      setSettingsError("Model is required.");
+      return;
+    }
+    const minScore = Number(settingsMinScore);
+    if (!Number.isFinite(minScore) || minScore < 0 || minScore > 1) {
+      setSettingsError("Min score must be between 0 and 1.");
+      return;
+    }
+    const maxResults = Number(settingsMaxResults);
+    if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 10) {
+      setSettingsError("Max results must be an integer from 1 to 10.");
+      return;
+    }
+
+    setIsSavingSettings(true);
+    setSettingsError(null);
+    setSettingsSuccess(null);
+    try {
+      const response = await apiClient.updateAgentSettings(agent.id, {
+        basePrompt: basePrompt.trim(),
+        model: settingsModel.trim(),
+        retrievalConfig: {
+          minScore,
+          maxResults
+        }
+      });
+      setAgent(response.agent);
+      setSettingsSuccess("Agent settings saved.");
+    } catch (error) {
+      setSettingsError(formatError(error));
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
   const handleContinue = async () => {
     if (step.id === "tenant") {
       await handleCreateTenant();
@@ -522,6 +674,17 @@ export function App() {
       return;
     }
     if (step.id === "channels") {
+      if (!activeChannel) {
+        setErrorMessage("Deploy a channel before finishing onboarding.");
+        return;
+      }
+      setErrorMessage(null);
+      setOnboardingSuccess("Onboarding complete. Your widget channel is ready.");
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById("admin-settings")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
       return;
     }
     nextStep();
@@ -529,69 +692,133 @@ export function App() {
 
   return (
     <div className="app">
+      {/* ============================================================
+          HERO
+          ============================================================ */}
       <header className="hero">
-        <div>
-          <p className="eyebrow">Norway-first AI Support OS</p>
-          <h1>Launch a fully trained support agent in minutes.</h1>
+        <div className="hero-content">
+          <p className="eyebrow accent">Norway-first AI Support OS</p>
+          <h1>
+            Build an AI support agent that resolves{" "}
+            <em>more conversations, faster.</em>
+          </h1>
           <p className="lead">
-            The fastest way for Norwegian teams to onboard, ingest knowledge, and deploy
-            a multi-channel AI assistant.
+            Onboard in minutes, ingest knowledge from your existing stack, and launch across
+            channels with GDPR-aligned defaults.
+          </p>
+          <div className="hero-cta-row">
+            <Button asChild size="lg">
+              <a href="#onboarding">Start onboarding</a>
+            </Button>
+            <Button variant="secondary" asChild size="lg">
+              <a href="#how-it-works">See how it works</a>
+            </Button>
+          </div>
+          <p className="hero-meta">
+            Trusted by Nordic support teams in ecommerce, SaaS, and customer operations
           </p>
         </div>
-        <div className="hero-card">
+        <aside className="hero-card" aria-label="Onboarding snapshot">
           <div>
-            <p className="metric-label">Time to first agent</p>
-            <p className="metric-value">09:12</p>
+            <p className="status-label">Time to first agent</p>
+            <p className="status-value">09:12</p>
           </div>
           <div>
-            <p className="metric-label">Sources ingested</p>
-            <p className="metric-value">{sources.length}</p>
+            <p className="status-label">Sources ingested</p>
+            <p className="status-value">{sources.length}</p>
           </div>
           <div>
-            <p className="metric-label">GDPR mode</p>
-            <div className="metric-value">
-              <StatusIndicator state="active" label="Enabled" size="sm" labelClassName="text-white" />
+            <p className="status-label">GDPR mode</p>
+            <div style={{ marginTop: "var(--space-1)" }}>
+              <StatusIndicator state="active" label="Enabled — Norway (Oslo)" size="sm" />
             </div>
           </div>
-        </div>
+        </aside>
       </header>
 
-      <section className="onboarding">
+      {/* ============================================================
+          HIGHLIGHTS — editorial columns
+          ============================================================ */}
+      <section className="highlights" aria-label="Platform highlights">
+        {highlightItems.map((item, index) => (
+          <article key={item.title} className="highlight-card">
+            <span className="highlight-num">— {formatStepNumber(index)}</span>
+            <h3>{item.title}</h3>
+            <p className="muted">{item.description}</p>
+          </article>
+        ))}
+      </section>
+
+      {/* ============================================================
+          HOW IT WORKS
+          ============================================================ */}
+      <section id="how-it-works" className="story-section" aria-label="How it works">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">How it works</p>
+            <h2>Four steps from signup to live deployment.</h2>
+          </div>
+          <Button variant="secondary" asChild>
+            <a href="#onboarding">Try the 10-minute flow</a>
+          </Button>
+        </div>
+        <div className="story-grid">
+          {steps.map((item, index) => (
+            <article key={item.id} className="story-card">
+              <p className="story-step">Step {formatStepNumber(index)}</p>
+              <h3>{item.title}</h3>
+              <p className="muted">{item.description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* ============================================================
+          ONBOARDING FLOW
+          ============================================================ */}
+      <section id="onboarding" className="onboarding" aria-label="Onboarding">
+        {/* Left: step list + progress + overall status */}
         <div className="panel">
           <div className="panel-header">
             <div>
-              <h2>10-minute onboarding flow</h2>
+              <p className="eyebrow">Onboarding</p>
+              <h2>10-minute setup.</h2>
               <p className="muted">
                 Complete each step to deploy your first widget and start deflecting tickets.
               </p>
             </div>
-            <Badge className="badge" variant="secondary">
-              Step {stepIndex + 1} of {steps.length}
+            <Badge variant="secondary" className="tabular">
+              {formatStepNumber(stepIndex)} / {formatStepNumber(steps.length - 1)}
             </Badge>
           </div>
+
           <div className="progress-track">
-            <div className="progress-bar">
+            <div className="progress-bar" aria-hidden>
               <span style={{ width: `${((stepIndex + 1) / steps.length) * 100}%` }} />
             </div>
-            <p className="muted">{stepIndex + 1} of {steps.length} steps complete</p>
+            <p className="meta tabular">
+              {stepIndex + 1} of {steps.length} steps complete
+            </p>
           </div>
-          <div className="steps">
+
+          <div className="steps" role="list">
             {steps.map((item, index) => (
-              <Button
+              <button
                 key={item.id}
                 type="button"
-                variant="ghost"
                 className={`step ${index === stepIndex ? "active" : ""}`}
                 onClick={() => setStepIndex(index)}
+                aria-current={index === stepIndex ? "step" : undefined}
               >
-                <span className="step-index">0{index + 1}</span>
+                <span className="step-index">{formatStepNumber(index)}</span>
                 <span>
                   <strong>{item.title}</strong>
                   <span>{item.description}</span>
                 </span>
-              </Button>
+              </button>
             ))}
           </div>
+
           <div className="status-grid">
             <div className="status-card">
               <p className="status-label">Sources connected</p>
@@ -606,20 +833,27 @@ export function App() {
               <p className="status-value">65%</p>
             </div>
           </div>
+
           {errorMessage && <div className="notice error">{errorMessage}</div>}
+          {onboardingSuccess && <div className="notice success">{onboardingSuccess}</div>}
+
           <div className="panel-controls">
             <Button type="button" variant="ghost" onClick={previousStep} disabled={stepIndex === 0}>
-              Back
+              ← Back
             </Button>
             <Button type="button" onClick={handleContinue} disabled={!canContinue}>
-              {continueLabel}
+              {continueLabel} →
             </Button>
           </div>
         </div>
 
+        {/* Right: detail panel, per-step content */}
         <div className="panel detail">
           <div className="panel-header">
             <div>
+              <p className="eyebrow">
+                Step {stepIndex + 1} of {steps.length} — {step.id}
+              </p>
               <h3>{step.title}</h3>
               <p className="muted">{step.description}</p>
             </div>
@@ -646,7 +880,7 @@ export function App() {
               <div className="info-card">
                 <h4>GDPR by default</h4>
                 <p>
-                  We keep data in-region, encrypt at rest, and provide deletion controls for end users.
+                  Data stays in-region, encrypts at rest, and ships with deletion controls for end users.
                 </p>
               </div>
               <div className="info-card">
@@ -686,13 +920,13 @@ export function App() {
               </div>
               <div className="info-card">
                 <h4>Escalation rules</h4>
-                <p>Low-confidence answers are escalated with transcript + next best action.</p>
+                <p>Low-confidence answers are escalated with transcript + next-best action.</p>
               </div>
             </div>
           )}
 
           {step.id === "sources" && (
-            <div>
+            <div className="form-grid">
               <div className="status-grid dense">
                 <div className="status-card">
                   <p className="status-label">Ready</p>
@@ -708,53 +942,54 @@ export function App() {
                 </div>
               </div>
 
-              <div className="form-grid">
-                <label>
-                  Website URL
-                  <Input
-                    value={websiteUrl}
-                    onChange={(event) => setWebsiteUrl(event.target.value)}
-                    placeholder="https://help.company.no"
-                  />
-                </label>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={handleAddWebsite}
-              disabled={isSubmitting}
-            >
-              Add website crawl
-            </Button>
-                <label>
-                  Snippet title
-                  <Input
-                    value={snippetTitle}
-                    onChange={(event) => setSnippetTitle(event.target.value)}
-                    placeholder="Returns policy"
-                  />
-                </label>
-                <label>
-                  Knowledge snippet
-                  <Textarea
-                    rows={4}
-                    value={snippetContent}
-                    onChange={(event) => setSnippetContent(event.target.value)}
-                    placeholder="Paste a short policy or FAQ answer to ingest."
-                  />
-                </label>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={handleAddSnippet}
-              disabled={isSubmitting}
-            >
-              Add snippet source
-            </Button>
-              </div>
+              <label>
+                Website URL
+                <Input
+                  value={websiteUrl}
+                  onChange={(event) => setWebsiteUrl(event.target.value)}
+                  placeholder="https://help.company.no"
+                />
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleAddWebsite}
+                disabled={isSubmitting}
+              >
+                Add website crawl
+              </Button>
+
+              <label>
+                Snippet title
+                <Input
+                  value={snippetTitle}
+                  onChange={(event) => setSnippetTitle(event.target.value)}
+                  placeholder="Returns policy"
+                />
+              </label>
+              <label>
+                Knowledge snippet
+                <Textarea
+                  rows={4}
+                  value={snippetContent}
+                  onChange={(event) => setSnippetContent(event.target.value)}
+                  placeholder="Paste a short policy or FAQ answer to ingest."
+                />
+              </label>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleAddSnippet}
+                disabled={isSubmitting}
+              >
+                Add snippet source
+              </Button>
 
               <div className="source-grid">
                 {sources.length === 0 ? (
-                  <p className="muted">No sources yet. Add a website or snippet to start ingestion.</p>
+                  <p className="muted" style={{ padding: "var(--space-3) 0" }}>
+                    No sources yet. Add a website or snippet to start ingestion.
+                  </p>
                 ) : (
                   sources.map((source) => (
                     <div key={source.id} className="source-card">
@@ -762,32 +997,39 @@ export function App() {
                         <p className="source-type">{source.type}</p>
                         <p className="source-value">{source.value ?? "Configured source"}</p>
                       </div>
-                      <Badge className={`pill ${source.status}`} variant="secondary">
-                        {source.status}
-                      </Badge>
+                      <span className={`pill ${source.status}`}>{source.status}</span>
                     </div>
                   ))
                 )}
               </div>
+
               <div className="panel-controls">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={handleRetrain}
-              disabled={isSubmitting}
-            >
-              Trigger retrain
-            </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleRetrain}
+                  disabled={isSubmitting}
+                >
+                  Trigger retrain
+                </Button>
               </div>
+
               <div className="ingestion-grid">
                 {ingestionJobs.length === 0 ? (
                   <p className="muted">Ingestion jobs will appear here once sources are queued.</p>
                 ) : (
                   ingestionJobs.map((run) => (
                     <div key={run.id} className="ingestion-card">
-                      <div>
-                        <p className="status-label">{run.kind === "crawl" ? "Website crawl" : "File ingestion"}</p>
-                        <p className="status-meta">Status: {run.status}</p>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "var(--space-3)" }}>
+                        <div>
+                          <p className="status-label">
+                            {run.kind === "crawl" ? "Website crawl" : "File ingestion"}
+                          </p>
+                          <p className="status-meta">Status: {run.status}</p>
+                        </div>
+                        <span className={`pill ${run.status === "complete" ? "ready" : run.status}`}>
+                          {run.status}
+                        </span>
                       </div>
                       <div className="progress-bar">
                         <span style={{ width: `${mapJobToProgress(run)}%` }} />
@@ -816,26 +1058,27 @@ export function App() {
                 Allowed domain
                 <Input value={domain} onChange={(event) => setDomain(event.target.value)} />
               </label>
-              <div className="panel-controls">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleDeployChannel}
-                disabled={isSubmitting}
-              >
-                Deploy channel
-              </Button>
-              {activeChannel && (
+              <div className="panel-controls" style={{ borderTop: "none", paddingTop: 0 }}>
                 <Button
                   type="button"
-                  variant="ghost"
-                  onClick={handleUpdateAllowlist}
+                  variant="secondary"
+                  onClick={handleDeployChannel}
                   disabled={isSubmitting}
                 >
-                  Update allowlist
+                  Deploy channel
                 </Button>
-              )}
-            </div>
+                {activeChannel && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={handleUpdateAllowlist}
+                    disabled={isSubmitting}
+                  >
+                    Update allowlist
+                  </Button>
+                )}
+              </div>
+
               <div className="info-card">
                 <h4>Embed snippet</h4>
                 <code>{embedSnippet}</code>
@@ -846,42 +1089,145 @@ export function App() {
                   <code>{helpPageUrl}</code>
                 </div>
               )}
+
               <div className="checklist">
                 {deploymentChecklist.map((item) => (
-                  <div key={item.id} className={`checklist-item ${item.status}`}>
+                  <div key={item.id} className="checklist-item">
                     <div>
                       <p className="checklist-title">{item.label}</p>
                       <p className="checklist-detail">{item.detail}</p>
                     </div>
-                    <Badge className="pill soft" variant="outline">
+                    <span className={`pill ${item.status === "done" ? "ready" : "soft"}`}>
                       {item.status}
-                    </Badge>
+                    </span>
                   </div>
                 ))}
               </div>
-            <div className="preview-card">
-              <p className="status-label">Widget preview</p>
-              <p className="preview-title">Hi, I am {agentName}.</p>
-              <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
-              <Button type="button">Open live chat</Button>
-            </div>
+
+              <div className="preview-card">
+                <p className="status-label">Widget preview</p>
+                <p className="preview-title"><em>Hi, I&apos;m {agentName}.</em></p>
+                <p className="muted">Ask me about returns, shipping, or warranty policies.</p>
+                <div>
+                  <Button type="button">Open live chat →</Button>
+                </div>
+              </div>
             </div>
           )}
         </div>
       </section>
 
-      <section className="observability">
+      {/* ============================================================
+          ADMIN SETTINGS
+          ============================================================ */}
+      <section id="admin-settings" aria-label="Agent settings">
         <div className="panel">
           <div className="panel-header">
             <div>
-              <h2>Observability dashboard</h2>
+              <p className="eyebrow">Agent settings</p>
+              <h2>Post-onboarding agent settings</h2>
               <p className="muted">
-                Monitor deflection, response speed, and retrieval quality across channels.
+                Tune prompt, model, and retrieval defaults without re-running onboarding.
               </p>
             </div>
-            <Badge className="badge" variant="secondary">{metricsWindowLabel}</Badge>
+            <span className="status">{isSavingSettings ? "Saving…" : "Ready"}</span>
           </div>
+
+          {!agent && (
+            <p className="muted">
+              Complete onboarding first, then configure prompt, model, and retrieval behavior here.
+            </p>
+          )}
+
+          {agent && (
+            <>
+              <div className="form-grid">
+                <label>
+                  Base prompt
+                  <Textarea
+                    rows={4}
+                    value={basePrompt}
+                    onChange={(event) => {
+                      setBasePrompt(event.target.value);
+                      setSettingsSuccess(null);
+                    }}
+                  />
+                </label>
+                <label>
+                  Model
+                  <Select
+                    value={settingsModel}
+                    onChange={(event) => {
+                      setSettingsModel(event.target.value);
+                      setSettingsSuccess(null);
+                    }}
+                  >
+                    <option value="gpt-4.1">gpt-4.1</option>
+                    <option value="gpt-4o-mini">gpt-4o-mini</option>
+                    <option value="claude-sonnet-4.5">claude-sonnet-4.5</option>
+                  </Select>
+                </label>
+                <label>
+                  Retrieval min score
+                  <Input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={settingsMinScore}
+                    onChange={(event) => {
+                      setSettingsMinScore(event.target.value);
+                      setSettingsSuccess(null);
+                    }}
+                  />
+                </label>
+                <label>
+                  Retrieval max results
+                  <Input
+                    type="number"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={settingsMaxResults}
+                    onChange={(event) => {
+                      setSettingsMaxResults(event.target.value);
+                      setSettingsSuccess(null);
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="panel-controls">
+                <span className="meta">Changes apply immediately on save.</span>
+                <Button type="button" onClick={handleSaveAgentSettings} disabled={isSavingSettings}>
+                  {isSavingSettings ? "Saving…" : "Save settings"}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {settingsError && <div className="notice error">{settingsError}</div>}
+          {settingsSuccess && <div className="notice success">{settingsSuccess}</div>}
+        </div>
+      </section>
+
+      {/* ============================================================
+          OBSERVABILITY
+          ============================================================ */}
+      <section className="observability" aria-label="Observability dashboard">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Observability</p>
+              <h2>Deflection, speed, retrieval.</h2>
+              <p className="muted">
+                Monitor conversation outcomes and retrieval quality across channels.
+              </p>
+            </div>
+            <Badge variant="secondary" className="tabular">{metricsWindowLabel}</Badge>
+          </div>
+
           {metricsError && <div className="notice error">{metricsError}</div>}
+
           <div className="metric-grid">
             <div className="metric-card">
               <p className="metric-label">Deflection rate</p>
@@ -942,6 +1288,7 @@ export function App() {
               <p className="metric-meta">Last 7 days.</p>
             </div>
           </div>
+
           <div className="series-grid">
             <h3>Conversation volume</h3>
             {metricsSummary && metricsSummary.series.length > 0 ? (
@@ -953,16 +1300,13 @@ export function App() {
                       <span
                         style={{
                           width: seriesMax
-                            ? `${Math.max(
-                                6,
-                                (point.conversations / seriesMax) * 100
-                              )}%`
-                            : "6%"
+                            ? `${Math.max(4, (point.conversations / seriesMax) * 100)}%`
+                            : "4%"
                         }}
                       />
                     </div>
-                    <span className="series-value">
-                      {point.conversations} / {point.deflections} deflected
+                    <span className="series-value tabular">
+                      {point.conversations} · {point.deflections} deflected
                     </span>
                   </div>
                 ))}
@@ -971,6 +1315,7 @@ export function App() {
               <p className="muted">Metrics will appear once conversations start flowing.</p>
             )}
           </div>
+
           <div className="intent-grid">
             <h3>Top intents</h3>
             {metricsSummary && metricsSummary.topIntents.length > 0 ? (
@@ -988,16 +1333,25 @@ export function App() {
           </div>
         </div>
 
+        {/* Conversation review — data-table rhythm */}
         <div className="panel">
           <div className="panel-header">
             <div>
-              <h3>Conversation review</h3>
+              <p className="eyebrow">Conversation review</p>
+              <h3>Live sessions.</h3>
               <p className="muted">
-                Track live sessions with response times, intent, and escalation signals.
+                Response times, intent, and escalation signals for recent conversations.
               </p>
             </div>
-            <span className="status">{metricsLoading ? "Refreshing" : "Live"}</span>
+            <span className="status">
+              <StatusIndicator
+                state={metricsLoading ? "fixing" : "active"}
+                label={metricsLoading ? "Refreshing" : "Live"}
+                size="sm"
+              />
+            </span>
           </div>
+
           {!agent && (
             <p className="muted">
               Create an agent to start capturing conversation-level observability.
@@ -1012,9 +1366,7 @@ export function App() {
                 <div key={conversation.conversationId} className="conversation-row">
                   <div>
                     <p className="conversation-id">{conversation.conversationId}</p>
-                    <p className="muted">
-                      {conversation.intent ?? "Intent pending"}
-                    </p>
+                    <p className="meta">{conversation.intent ?? "Intent pending"}</p>
                   </div>
                   <span className={`status-pill ${conversation.status}`}>
                     {conversation.status}
@@ -1038,50 +1390,97 @@ export function App() {
         </div>
       </section>
 
-      <section className="split">
-        <div>
-          <h2>What you get on day one</h2>
-          <p className="muted">
-            Launch-ready ingestion, actions, and channels so teams can onboard fast and stay
-            compliant from the start.
-          </p>
-          <div className="pill-row">
-            {[
-              "Website crawl",
-              "PDF & files",
-              "Notion",
-              "Zendesk",
-              "Slack",
-              "Shopify",
-              "Stripe",
-              "Cal.com",
-              "GDPR controls"
-            ].map((item) => (
-              <Badge key={item} className="pill soft" variant="outline">
-                {item}
-              </Badge>
-            ))}
+      {/* ============================================================
+          BENEFITS
+          ============================================================ */}
+      <section id="benefits" className="benefits" aria-label="Benefits">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">Benefits</p>
+            <h2>Outcomes that compound after launch.</h2>
+            <p className="muted">
+              Improve support, operations, and compliance without changing your existing tooling.
+            </p>
+          </div>
+          <Button asChild>
+            <a href="#onboarding">Launch your first agent →</a>
+          </Button>
+        </div>
+        <div className="benefit-grid">
+          {benefitItems.map((item, index) => (
+            <article key={item.title} className="benefit-card">
+              <span className="highlight-num">— {formatStepNumber(index)}</span>
+              <h3>{item.title}</h3>
+              <p className="muted">{item.detail}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* ============================================================
+          TRUST
+          ============================================================ */}
+      <section className="trust" aria-label="Trust and security">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Trust and security</p>
+              <h2>Enterprise-ready controls, built in.</h2>
+            </div>
+            <Button variant="secondary" asChild>
+              <a href="#onboarding">Book onboarding walkthrough</a>
+            </Button>
+          </div>
+          <div className="trust-grid">
+            <div className="testimonial-list">
+              {testimonials.map((item) => (
+                <article key={item.author} className="testimonial-card">
+                  <p className="testimonial-quote">&ldquo;{item.quote}&rdquo;</p>
+                  <p className="testimonial-author">{item.author}</p>
+                </article>
+              ))}
+            </div>
+            <div>
+              <p className="status-label">Security signals</p>
+              <div className="security-badges">
+                {securitySignals.map((signal) => (
+                  <Badge key={signal} className="security-badge" variant="secondary">
+                    {signal}
+                  </Badge>
+                ))}
+              </div>
+              <p className="muted">
+                Keep customer data in Norway/EU regions, enforce retention, and maintain
+                auditable escalation workflows.
+              </p>
+            </div>
           </div>
         </div>
-        <div className="insight-card">
-          <h3>Confidence routing</h3>
-          <p className="muted">
-            Low-confidence answers automatically escalate to your CRM with context and next actions.
-          </p>
-          <div className="timeline">
-            <div>
-              <p className="timeline-title">Ticket created</p>
-              <p className="timeline-meta">Zendesk • 00:12</p>
-            </div>
-            <div>
-              <p className="timeline-title">Slack alert sent</p>
-              <p className="timeline-meta">#support • 00:15</p>
-            </div>
-            <div>
-              <p className="timeline-title">Customer updated</p>
-              <p className="timeline-meta">Web widget • 00:22</p>
-            </div>
-          </div>
+      </section>
+
+      {/* ============================================================
+          CTA STRIP
+          ============================================================ */}
+      <section className="cta-strip" aria-label="Primary call to action">
+        <p className="eyebrow" style={{ color: "color-mix(in oklch, var(--ink-inverse) 70%, transparent)" }}>
+          Ready to ship
+        </p>
+        <h2>
+          Deploy an AI support agent this week&nbsp;
+          <em style={{ color: "var(--accent-edge)" }}>— not next quarter.</em>
+        </h2>
+        <p className="muted">
+          Start with the onboarding flow, then deploy your widget and track impact in one place.
+        </p>
+        <div className="hero-cta-row" style={{ marginTop: "var(--space-3)" }}>
+          <Button asChild size="lg">
+            <a href="#onboarding">Start onboarding →</a>
+          </Button>
+          <Button variant="outline" asChild size="lg">
+            <a href="#benefits" style={{ color: "var(--ink-inverse)", borderColor: "color-mix(in oklch, var(--ink-inverse) 30%, transparent)", backgroundColor: "transparent" }}>
+              See platform benefits
+            </a>
+          </Button>
         </div>
       </section>
     </div>

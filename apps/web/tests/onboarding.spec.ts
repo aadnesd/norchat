@@ -12,6 +12,12 @@ type AgentResponse = {
   id: string;
   tenantId: string;
   name: string;
+  basePrompt?: string;
+  model?: string;
+  retrievalConfig?: {
+    minScore?: number;
+    maxResults?: number;
+  };
 };
 
 type SourceResponse = {
@@ -39,9 +45,13 @@ test.describe("onboarding api-backed flow", () => {
     await page.waitForLoadState("domcontentloaded");
 
     await expect(
-      page.getByRole("heading", { name: "Launch a fully trained support agent in minutes." })
+      page.getByRole("heading", {
+        name: "Build an AI support agent that resolves more conversations, faster."
+      })
     ).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Create your workspace" })).toBeVisible();
+    await expect(
+      page.locator("#onboarding").getByRole("heading", { name: "Create your workspace" })
+    ).toBeVisible();
 
     const continueButton = page.getByRole("button", { name: "Continue" });
     const [tenantCreateResponse] = await Promise.all([
@@ -62,7 +72,9 @@ test.describe("onboarding api-backed flow", () => {
     expect(tenant.name).toBe("Nordic Care");
     expect(tenant.region).toBe("norway-oslo");
     await expect(page.getByText("Step 2 of 4")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Name your support agent" })).toBeVisible();
+    await expect(
+      page.locator("#onboarding").getByRole("heading", { name: "Name your support agent" })
+    ).toBeVisible();
 
     const [agentCreateResponse] = await Promise.all([
       page.waitForResponse((response) => {
@@ -81,7 +93,9 @@ test.describe("onboarding api-backed flow", () => {
     expect(agent.tenantId).toBe(tenant.id);
     expect(agent.name).toBe("Hanna");
     await expect(page.getByText("Step 3 of 4")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Add sources" })).toBeVisible();
+    await expect(
+      page.locator("#onboarding").getByRole("heading", { name: "Add sources" })
+    ).toBeVisible();
 
     const [sourceCreateResponse, sourceIngestResponse] = await Promise.all([
       page.waitForResponse((response) => {
@@ -115,7 +129,9 @@ test.describe("onboarding api-backed flow", () => {
 
     await continueButton.click();
     await expect(page.getByText("Step 4 of 4")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Deploy a web widget" })).toBeVisible();
+    await expect(
+      page.locator("#onboarding").getByRole("heading", { name: "Deploy a web widget" })
+    ).toBeVisible();
 
     const [channelCreateResponse] = await Promise.all([
       page.waitForResponse((response) => {
@@ -142,6 +158,10 @@ test.describe("onboarding api-backed flow", () => {
     });
     await expect(allowlistChecklistItem).toContainText("done");
     await expect(snippetChecklistItem).toContainText("done");
+    await page.getByRole("button", { name: "Finish onboarding" }).click();
+    await expect(
+      page.getByText("Onboarding complete. Your widget channel is ready.")
+    ).toBeVisible();
 
     const authHeaders = { "x-user-id": apiUserId };
     const tenantsResponse = await request.get(`${apiBaseUrl}/tenants`, { headers: authHeaders });
@@ -171,5 +191,75 @@ test.describe("onboarding api-backed flow", () => {
     expect(channelPayload.channel.config).toMatchObject({
       allowedDomains: ["support.nordiccare.no"]
     });
+
+    await expect(
+      page.getByRole("heading", { name: "Post-onboarding agent settings" })
+    ).toBeVisible();
+
+    let settingsPatchRequests = 0;
+    page.on("request", (outbound) => {
+      if (
+        outbound.method() === "PATCH" &&
+        /\/agents\/agent_[^/]+$/u.test(new URL(outbound.url()).pathname)
+      ) {
+        settingsPatchRequests += 1;
+      }
+    });
+
+    await page.getByLabel("Retrieval min score").fill("1.5");
+    await page.getByRole("button", { name: "Save settings" }).click();
+    await expect(page.getByText("Min score must be between 0 and 1.")).toBeVisible();
+    expect(settingsPatchRequests).toBe(0);
+
+    const updatedPrompt =
+      "You are a tuned support assistant. Use concise answers and fallback to English when asked.";
+    await page.getByLabel("Base prompt").fill(updatedPrompt);
+    await page.getByLabel("Model").selectOption("gpt-4o-mini");
+    await page.getByLabel("Retrieval min score").fill("0.4");
+    await page.getByLabel("Retrieval max results").fill("3");
+
+    const saveButton = page.getByRole("button", { name: "Save settings" });
+    const updateSettingsResponsePromise = page.waitForResponse((response) => {
+      const outbound = response.request();
+      return (
+        outbound.method() === "PATCH" &&
+        /\/agents\/agent_[^/]+$/u.test(new URL(response.url()).pathname) &&
+        response.status() === 200
+      );
+    });
+    await saveButton.click();
+    const updateSettingsResponse = await updateSettingsResponsePromise;
+    await expect(page.getByText("Agent settings saved.")).toBeVisible();
+    const updatedAgent = (await updateSettingsResponse.json()) as { agent: AgentResponse };
+    expect(updatedAgent.agent.model).toBe("gpt-4o-mini");
+    expect(updatedAgent.agent.retrievalConfig).toEqual({
+      minScore: 0.4,
+      maxResults: 3
+    });
+    expect(settingsPatchRequests).toBe(1);
+
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Post-onboarding agent settings" })
+    ).toBeVisible();
+    await expect(page.getByLabel("Base prompt")).toHaveValue(updatedPrompt);
+    await expect(page.getByLabel("Model")).toHaveValue("gpt-4o-mini");
+    await expect(page.getByLabel("Retrieval min score")).toHaveValue("0.4");
+    await expect(page.getByLabel("Retrieval max results")).toHaveValue("3");
+
+    const refreshedAgentsResponse = await request.get(`${apiBaseUrl}/agents`, { headers: authHeaders });
+    expect(refreshedAgentsResponse.ok()).toBeTruthy();
+    const refreshedAgentsPayload = (await refreshedAgentsResponse.json()) as {
+      items: AgentResponse[];
+    };
+    const refreshedAgent = refreshedAgentsPayload.items.find((item) => item.id === agent.id);
+    expect(refreshedAgent?.basePrompt).toBe(updatedPrompt);
+    expect(refreshedAgent?.model).toBe("gpt-4o-mini");
+    expect(refreshedAgent?.retrievalConfig).toEqual({
+      minScore: 0.4,
+      maxResults: 3
+    });
+
+    await page.screenshot({ path: "test-results/issue-4-admin-settings.png", fullPage: true });
   });
 });

@@ -287,3 +287,25 @@ describe("runWorkerTick", () => {
     );
   });
 });
+
+describe("default processor safety", () => {
+  it("fails claimed jobs instead of silently marking them complete when no processJob is injected", async () => {
+    const runtimeStatePath = await createRuntimeStatePath();
+    await persistRuntimeState(runtimeStatePath, {
+      ingestionJobs: [createQueuedJob({ maxAttempts: 1 })],
+      metricEvents: [],
+      auditEvents: []
+    });
+
+    // Intentionally pass no `processJob`: the worker should refuse to
+    // complete real work and mark the job failed with a clear error code.
+    const processed = await runWorkerCycle({ runtimeStatePath, maxAttempts: 1 });
+    expect(processed).toBe(1);
+
+    const runtimeState = await loadRuntimeState(runtimeStatePath);
+    const job = runtimeState.ingestionJobs[0];
+    expect(job?.status).toBe("failed");
+    expect(job?.lastError?.message).toContain("no processJob configured");
+    expect(job?.lastError?.transient).toBe(false);
+  });
+});

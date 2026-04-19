@@ -67,6 +67,14 @@ export type RunWorkerCycleOptions = {
 export type StartWorkerOptions = Omit<RunWorkerCycleOptions, "runtimeStatePath"> & {
   runtimeStatePath?: string;
   pollIntervalMs?: number;
+  /**
+   * When true, the worker will use a no-op processor if none is injected.
+   * Intended for tests and lifecycle-only deployments. In normal operation
+   * leave this unset — the default behavior is to fail loudly when no real
+   * processor is configured, so jobs are never silently marked complete.
+   * Can also be enabled via the WORKER_ALLOW_NOOP_PROCESSOR env var.
+   */
+  allowNoopProcessor?: boolean;
 };
 
 export type WorkerController = {
@@ -242,7 +250,42 @@ const normalizeRuntimeState = (value: unknown): DurableRuntimeState => {
   };
 };
 
-const defaultProcessJob: JobProcessor = async () => undefined;
+/**
+ * Sentinel used when the worker runs without a real processor. Throws a
+ * non-retryable error so the job is marked `failed` with an explicit
+ * message instead of silently "completing" ingestion / retrain / action
+ * work. Operators will see a clear failure in the runtime state and the
+ * scheduler will not keep retrying an unconfigured worker.
+ */
+const defaultProcessJob: JobProcessor = async (job) => {
+  throw createTypedError({
+    code: "worker_processor_not_configured",
+    message:
+      `worker has no processJob configured; refusing to mark ${job.kind} job ${job.id} complete`,
+    statusCode: 500,
+    details: {
+      jobId: job.id,
+      jobKind: job.kind,
+      hint:
+        "Inject processJob via startWorker({ processJob }) or set WORKER_ALLOW_NOOP_PROCESSOR=1 to opt into no-op mode (tests only)."
+    }
+  });
+};
+
+/**
+ * Opt-in no-op processor. Kept separate so it is only reachable via an
+ * explicit flag, never by accident. Intended for tests and the lifecycle-
+ * only worker variant used while real processors live elsewhere.
+ */
+const noopProcessJob: JobProcessor = async () => undefined;
+
+const isTruthyEnv = (value: string | undefined): boolean => {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+};
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -584,7 +627,10 @@ export function startWorker(options: StartWorkerOptions = {}): WorkerController 
     options.retryMaxDelayMs ??
     parseRetryMaxDelay(undefined, retryBaseDelayMs);
   const now = options.now ?? (() => new Date());
-  const processJob = options.processJob ?? defaultProcessJob;
+  const allowNoop =
+    options.allowNoopProcessor ?? isTruthyEnv(process.env.WORKER_ALLOW_NOOP_PROCESSOR);
+  const processJob =
+    options.processJob ?? (allowNoop ? noopProcessJob : defaultProcessJob);
   const log = options.log ?? defaultWorkerLogger;
 
   let stopped = false;
@@ -628,6 +674,17 @@ export function startWorker(options: StartWorkerOptions = {}): WorkerController 
   log.info(
     `[worker] started (poll interval: ${pollIntervalMs}ms, concurrency: ${concurrency}, runtime state: ${runtimeStatePath})`
   );
+  if (!options.processJob) {
+    if (allowNoop) {
+      log.warn(
+        "[worker] running with no-op processor (WORKER_ALLOW_NOOP_PROCESSOR). Jobs will be marked complete without doing any work. Not safe for production."
+      );
+    } else {
+      log.warn(
+        "[worker] no processJob injected. Claimed jobs will FAIL with worker_processor_not_configured until a real processor is wired in. Set WORKER_ALLOW_NOOP_PROCESSOR=1 only if you intentionally want no-op completion."
+      );
+    }
+  }
 
   return {
     tick: async () => {

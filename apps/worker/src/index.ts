@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createStructuredLogger, createTypedError, resolveRuntimeStatePath } from "@norway-support/shared";
+import { createStructuredLogger, createTypedError, resolveRuntimeStatePath, runtimeStateLockPath, withFileLock } from "@norway-support/shared";
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_CONCURRENCY = 1;
@@ -353,19 +353,25 @@ const patchIngestionJob = async (
   jobId: string,
   update: (job: RuntimeIngestionJob) => RuntimeIngestionJob | null
 ) => {
-  const runtimeState = await loadRuntimeState(runtimeStatePath);
-  const index = runtimeState.ingestionJobs.findIndex((job) => job.id === jobId);
-  if (index === -1) {
-    return undefined;
-  }
-  const currentJob = runtimeState.ingestionJobs[index];
-  const nextJob = update(currentJob);
-  if (!nextJob) {
-    return undefined;
-  }
-  runtimeState.ingestionJobs[index] = nextJob;
-  await persistRuntimeState(runtimeStatePath, runtimeState);
-  return nextJob;
+  // Guard the read-modify-write with the shared cross-process lock so
+  // concurrent API metric/quota writes and worker claim/complete updates
+  // cannot clobber each other. The lock also serializes this worker's
+  // own in-cycle patches, so concurrency > 1 is safe.
+  return withFileLock(runtimeStateLockPath(runtimeStatePath), async () => {
+    const runtimeState = await loadRuntimeState(runtimeStatePath);
+    const index = runtimeState.ingestionJobs.findIndex((job) => job.id === jobId);
+    if (index === -1) {
+      return undefined;
+    }
+    const currentJob = runtimeState.ingestionJobs[index];
+    const nextJob = update(currentJob);
+    if (!nextJob) {
+      return undefined;
+    }
+    runtimeState.ingestionJobs[index] = nextJob;
+    await persistRuntimeState(runtimeStatePath, runtimeState);
+    return nextJob;
+  });
 };
 
 export function parsePollInterval(value = process.env.WORKER_POLL_INTERVAL_MS): number {
@@ -452,31 +458,33 @@ export async function recoverProcessingJobs(
   runtimeStatePath: string,
   now: WorkerClock = () => new Date()
 ) {
-  const runtimeState = await loadRuntimeState(runtimeStatePath);
-  const recoveredAt = now().toISOString();
-  let recovered = 0;
-  runtimeState.ingestionJobs = runtimeState.ingestionJobs.map((job) => {
-    if (job.status !== "processing") {
-      return job;
-    }
-    recovered += 1;
-    return {
-      ...job,
-      status: "queued",
-      completedAt: undefined,
-      nextAttemptAt: recoveredAt,
-      lastError: {
-        message: "recovered_after_worker_restart",
-        transient: true,
-        attempts: job.attempts ?? 0,
-        at: recoveredAt
+  return withFileLock(runtimeStateLockPath(runtimeStatePath), async () => {
+    const runtimeState = await loadRuntimeState(runtimeStatePath);
+    const recoveredAt = now().toISOString();
+    let recovered = 0;
+    runtimeState.ingestionJobs = runtimeState.ingestionJobs.map((job) => {
+      if (job.status !== "processing") {
+        return job;
       }
-    };
+      recovered += 1;
+      return {
+        ...job,
+        status: "queued",
+        completedAt: undefined,
+        nextAttemptAt: recoveredAt,
+        lastError: {
+          message: "recovered_after_worker_restart",
+          transient: true,
+          attempts: job.attempts ?? 0,
+          at: recoveredAt
+        }
+      };
+    });
+    if (recovered > 0) {
+      await persistRuntimeState(runtimeStatePath, runtimeState);
+    }
+    return recovered;
   });
-  if (recovered > 0) {
-    await persistRuntimeState(runtimeStatePath, runtimeState);
-  }
-  return recovered;
 }
 
 export async function runWorkerCycle(

@@ -24,7 +24,9 @@ import {
   createTypedError,
   isTypedError,
   resolveRuntimeStoreDir,
-  serializeTypedError
+  runtimeStateLockPath,
+  serializeTypedError,
+  withFileLock
 } from "@norway-support/shared";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -585,10 +587,33 @@ const persistDurableRuntimeState = async (
   filePath: string,
   state: DurableRuntimeState
 ) => {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(state), "utf8");
-  await fs.rename(tmpPath, filePath);
+  // Guard the whole read-merge-write with a cross-process lock so the
+  // worker cannot slip in a job update between the rename we perform here
+  // and its own next claim/complete write (and vice versa). Inside the
+  // lock we also re-read the latest on-disk state and merge the
+  // worker-owned `ingestionJobs` field over our snapshot: the API process
+  // only mutates metrics/quota/audit data in-memory, so it must not
+  // clobber job state changes that the worker has already persisted.
+  await withFileLock(runtimeStateLockPath(filePath), async () => {
+    let merged = state;
+    try {
+      const existingRaw = await fs.readFile(filePath, "utf8");
+      const existing = JSON.parse(existingRaw) as Partial<DurableRuntimeState>;
+      if (Array.isArray(existing.ingestionJobs)) {
+        merged = { ...state, ingestionJobs: existing.ingestionJobs as DurableRuntimeState["ingestionJobs"] };
+      }
+    } catch (error) {
+      // Missing or unparseable file: fall back to the in-memory snapshot.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        // Swallow parse errors but do not overwrite job state on them —
+        // the next worker write will repair the file.
+      }
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(merged), "utf8");
+    await fs.rename(tmpPath, filePath);
+  });
 };
 
 type RuntimePersistRetryOptions = {

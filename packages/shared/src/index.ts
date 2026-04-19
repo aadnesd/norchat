@@ -645,3 +645,133 @@ export const resolveRuntimeStatePath = (options?: {
   }
   return path.join(resolveRuntimeStoreDir({ env, cwd: options?.cwd }), "runtime-state.json");
 };
+
+// --- Cross-process file lock --------------------------------------------
+//
+// The runtime state file is read-modify-written by both the API process
+// (on every metric / quota / audit event) and by each worker process (on
+// every claim / complete / retry). Without coordination the rename-based
+// "atomic" writes can still clobber updates made by the other process
+// between load and persist.
+//
+// We use a sidecar lockfile created with O_CREAT | O_EXCL. This works on
+// POSIX and on Windows without extra dependencies, and is resilient to
+// crashes via a stale-lock timeout: a lock older than `staleAfterMs` is
+// considered abandoned and may be reclaimed. The lock body contains the
+// owner's PID + timestamp to aid debugging. When the stale recovery
+// reclaims a lock we keep a best-effort exclusive-create race so only one
+// waiter wins.
+
+import { openSync, closeSync, unlinkSync, statSync, writeSync } from "node:fs";
+
+export type FileLockOptions = {
+  /** How long to wait total (ms) before giving up. Default 10_000. */
+  timeoutMs?: number;
+  /** Retry poll interval (ms). Default 25. */
+  retryMs?: number;
+  /** Treat locks older than this as abandoned (ms). Default 30_000. */
+  staleAfterMs?: number;
+  /** Signal to abort waiting. */
+  signal?: AbortSignal;
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const tryAcquireLock = (lockPath: string): boolean => {
+  try {
+    const fd = openSync(lockPath, "wx");
+    try {
+      const payload = `${process.pid}\n${Date.now()}\n`;
+      writeSync(fd, payload);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const reclaimIfStale = (lockPath: string, staleAfterMs: number): boolean => {
+  try {
+    const stat = statSync(lockPath);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs < staleAfterMs) {
+      return false;
+    }
+    // Best-effort: remove the stale lock and let the caller retry. If
+    // another waiter reclaims first we'll simply see EEXIST on the next
+    // tryAcquireLock and keep polling.
+    unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Acquire a cross-process lock on `lockPath` (typically
+ * `<runtime-state>.lock`), run `fn`, then release. If acquisition takes
+ * longer than `timeoutMs`, throws. Stale locks older than `staleAfterMs`
+ * are reclaimed automatically so a crashed holder does not wedge the
+ * system permanently.
+ */
+export const withFileLock = async <T>(
+  lockPath: string,
+  fn: () => Promise<T>,
+  options: FileLockOptions = {}
+): Promise<T> => {
+  const timeoutMs = options.timeoutMs ?? 10_000;
+  const retryMs = Math.max(1, options.retryMs ?? 25);
+  const staleAfterMs = Math.max(1_000, options.staleAfterMs ?? 30_000);
+  const deadline = Date.now() + timeoutMs;
+  let acquired = false;
+
+  while (!acquired) {
+    if (options.signal?.aborted) {
+      throw createTypedError({
+        code: "file_lock_aborted",
+        message: `aborted while waiting for file lock at ${lockPath}`,
+        statusCode: 499
+      });
+    }
+    if (tryAcquireLock(lockPath)) {
+      acquired = true;
+      break;
+    }
+    if (reclaimIfStale(lockPath, staleAfterMs) && tryAcquireLock(lockPath)) {
+      acquired = true;
+      break;
+    }
+    if (Date.now() >= deadline) {
+      throw createTypedError({
+        code: "file_lock_timeout",
+        message: `timed out acquiring file lock at ${lockPath}`,
+        statusCode: 503,
+        details: { lockPath, timeoutMs }
+      });
+    }
+    await sleep(retryMs);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // best effort: if someone else already reclaimed a stale copy of
+      // our lock, unlink may fail. Nothing to do.
+    }
+  }
+};
+
+/** Derive the conventional lock-file path for a given runtime state path. */
+export const runtimeStateLockPath = (runtimeStatePath: string): string =>
+  `${runtimeStatePath}.lock`;

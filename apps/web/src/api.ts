@@ -16,12 +16,18 @@ export type TenantCreateInput = {
 
 export type AgentStatus = "draft" | "active" | "paused" | "archived";
 
+export type RetrievalConfig = {
+  minScore?: number;
+  maxResults?: number;
+};
+
 export type Agent = {
   id: string;
   tenantId: string;
   name: string;
   basePrompt?: string;
   model?: string;
+  retrievalConfig?: RetrievalConfig;
   status: AgentStatus;
   createdAt: string;
 };
@@ -31,6 +37,13 @@ export type AgentCreateInput = {
   name: string;
   basePrompt?: string;
   model?: string;
+  retrievalConfig?: RetrievalConfig;
+};
+
+export type AgentSettingsUpdateInput = {
+  basePrompt?: string;
+  model?: string;
+  retrievalConfig?: RetrievalConfig;
 };
 
 export type SourceType = "website" | "file" | "text" | "notion" | "ticketing" | "qa";
@@ -205,6 +218,33 @@ export const createApiClient = (baseUrl: string, userId = "user_admin") => {
     createAgent: (input: AgentCreateInput) =>
       apiFetch<Agent>(baseUrl, "/agents", {
         method: "POST",
+        body: JSON.stringify(input)
+      }, userId),
+    getAgents: () =>
+      apiFetch<{ items: Agent[] }>(baseUrl, "/agents", {
+        method: "GET"
+      }, userId),
+    getTenants: () =>
+      apiFetch<{ items: Tenant[] }>(baseUrl, "/tenants", {
+        method: "GET"
+      }, userId),
+    getSources: (input: { agentId?: string } = {}) =>
+      apiFetch<{ items: Source[] }>(
+        baseUrl,
+        `/sources${buildQuery(input)}`,
+        { method: "GET" },
+        userId
+      ),
+    getChannels: (input: { agentId?: string } = {}) =>
+      apiFetch<{ items: Channel[] }>(
+        baseUrl,
+        `/channels${buildQuery(input)}`,
+        { method: "GET" },
+        userId
+      ),
+    updateAgentSettings: (agentId: string, input: AgentSettingsUpdateInput) =>
+      apiFetch<{ agent: Agent }>(baseUrl, `/agents/${agentId}`, {
+        method: "PATCH",
         body: JSON.stringify(input)
       }, userId),
     createSource: (input: SourceCreateInput) =>

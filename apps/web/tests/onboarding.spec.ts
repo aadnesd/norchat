@@ -247,6 +247,14 @@ test.describe("onboarding api-backed flow", () => {
     await expect(page.getByLabel("Retrieval min score")).toHaveValue("0.4");
     await expect(page.getByLabel("Retrieval max results")).toHaveValue("3");
 
+    // Onboarding counters should rehydrate instead of resetting to step 1.
+    await expect(page.getByText("Step 4 of 4")).toBeVisible();
+    await expect(
+      page
+        .locator("#onboarding")
+        .getByRole("heading", { name: "Deploy a web widget" })
+    ).toBeVisible();
+
     const refreshedAgentsResponse = await request.get(`${apiBaseUrl}/agents`, { headers: authHeaders });
     expect(refreshedAgentsResponse.ok()).toBeTruthy();
     const refreshedAgentsPayload = (await refreshedAgentsResponse.json()) as {

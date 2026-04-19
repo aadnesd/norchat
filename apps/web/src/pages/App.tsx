@@ -299,20 +299,79 @@ export function App() {
 
   useEffect(() => {
     let isActive = true;
-    apiClient
-      .getAgents()
-      .then((response) => {
-        if (!isActive || response.items.length === 0) {
+    (async () => {
+      try {
+        const [agentsResponse, tenantsResponse] = await Promise.all([
+          apiClient.getAgents(),
+          apiClient.getTenants().catch(() => ({ items: [] as Tenant[] }))
+        ]);
+        if (!isActive || agentsResponse.items.length === 0) {
           return;
         }
-        const latest = [...response.items].sort(
+        const latest = [...agentsResponse.items].sort(
           (left, right) =>
             new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
         )[0];
         setAgent(latest);
         setAgentName(latest.name);
-      })
-      .catch(() => undefined);
+
+        const matchingTenant =
+          tenantsResponse.items.find((candidate) => candidate.id === latest.tenantId) ?? null;
+        if (matchingTenant) {
+          setTenant(matchingTenant);
+          setWorkspaceName(matchingTenant.name);
+          if (matchingTenant.region) {
+            setRegion(matchingTenant.region);
+          }
+          if (matchingTenant.dataResidency) {
+            setDataResidency(matchingTenant.dataResidency);
+          }
+        }
+
+        const [sourcesResponse, channelsResponse] = await Promise.all([
+          apiClient
+            .getSources({ agentId: latest.id })
+            .catch(() => ({ items: [] as Source[] })),
+          apiClient
+            .getChannels({ agentId: latest.id })
+            .catch(() => ({ items: [] as Channel[] }))
+        ]);
+        if (!isActive) {
+          return;
+        }
+
+        const restoredSources = sourcesResponse.items;
+        setSources(restoredSources);
+
+        const restoredChannel =
+          [...channelsResponse.items].sort(
+            (left, right) =>
+              new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+          )[0] ?? null;
+        if (restoredChannel) {
+          setActiveChannel(restoredChannel);
+          setChannelType(restoredChannel.type);
+          const allowedDomains = (restoredChannel.config as { allowedDomains?: unknown })
+            ?.allowedDomains;
+          const firstDomain = Array.isArray(allowedDomains) ? allowedDomains[0] : undefined;
+          if (typeof firstDomain === "string" && firstDomain.length > 0) {
+            setDomain(firstDomain);
+          }
+        }
+
+        // Advance onboarding to the furthest completed step so counters stay accurate.
+        const furthestIndex = restoredChannel
+          ? steps.length - 1
+          : restoredSources.length > 0
+            ? steps.findIndex((entry) => entry.id === "channels")
+            : steps.findIndex((entry) => entry.id === "sources");
+        if (furthestIndex >= 0) {
+          setStepIndex(furthestIndex);
+        }
+      } catch {
+        // swallow hydration errors; user can still proceed manually
+      }
+    })();
     return () => {
       isActive = false;
     };

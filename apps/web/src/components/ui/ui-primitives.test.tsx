@@ -42,7 +42,7 @@ describe("ui primitives", () => {
       <Badge variant="secondary">Step 1 of 4</Badge>
     );
 
-    expect(html).toContain("bg-slate-100");
+    expect(html).toContain("bg-[var(--surface-sunken)]");
     expect(html).toContain("Step 1 of 4");
   });
 });

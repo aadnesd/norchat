@@ -1107,7 +1107,14 @@ export function App() {
           </div>
 
           <div className="progress-track">
-            <div className="progress-bar" aria-hidden>
+            <div
+              className="progress-bar"
+              role="progressbar"
+              aria-valuenow={stepIndex + 1}
+              aria-valuemin={1}
+              aria-valuemax={steps.length}
+              aria-valuetext={`${stepIndex + 1} of ${steps.length} steps complete`}
+            >
               <span style={{ width: `${((stepIndex + 1) / steps.length) * 100}%` }} />
             </div>
             <p className="meta tabular">
@@ -1153,10 +1160,10 @@ export function App() {
 
           <div className="panel-controls">
             <Button type="button" variant="ghost" onClick={previousStep} disabled={stepIndex === 0}>
-              ← Back
+              Back
             </Button>
             <Button type="button" onClick={handleContinue} disabled={!canContinue}>
-              {continueLabel} →
+              {continueLabel}
             </Button>
           </div>
         </div>
@@ -1576,7 +1583,7 @@ export function App() {
                 </p>
                 <div>
                   <Button type="button">
-                    {isVoiceChannel(channelType) ? "Simulate call turn →" : "Open live chat →"}
+                    {isVoiceChannel(channelType) ? "Simulate call turn" : "Open live chat"}
                   </Button>
                 </div>
               </div>
@@ -1895,7 +1902,7 @@ export function App() {
             </p>
           </div>
           <Button asChild>
-            <a href="#onboarding">Launch your first agent →</a>
+            <a href="#onboarding">Launch your first agent</a>
           </Button>
         </div>
         <div className="benefit-grid">
@@ -1985,22 +1992,22 @@ export function App() {
           CTA STRIP
           ============================================================ */}
       <section className="cta-strip" aria-label="Primary call to action">
-        <p className="eyebrow" style={{ color: "color-mix(in oklch, var(--ink-inverse) 70%, transparent)" }}>
+        <p className="eyebrow">
           Ready to ship
         </p>
         <h2>
           Deploy an AI support agent this week&nbsp;
-          <em style={{ color: "var(--accent-edge)" }}>— not next quarter.</em>
+          <em>— not next quarter.</em>
         </h2>
         <p className="muted">
           Start with the onboarding flow, then deploy your widget and track impact in one place.
         </p>
-        <div className="hero-cta-row" style={{ marginTop: "var(--space-3)" }}>
+        <div className="hero-cta-row">
           <Button asChild size="lg">
-            <a href="#onboarding">Start onboarding →</a>
+            <a href="#onboarding">Start onboarding</a>
           </Button>
-          <Button variant="outline" asChild size="lg">
-            <a href="#benefits" style={{ color: "var(--ink-inverse)", borderColor: "color-mix(in oklch, var(--ink-inverse) 30%, transparent)", backgroundColor: "transparent" }}>
+          <Button variant="outline" asChild size="lg" className="btn-inverse">
+            <a href="#benefits">
               See platform benefits
             </a>
           </Button>

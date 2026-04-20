@@ -4,11 +4,7 @@ import { cn } from "@/lib/utils";
 
 /**
  * Badge — flat, text-weight driven, hairline bordered.
- *
- * NOTE: the `secondary` variant retains the `bg-slate-100` literal because
- * `ui-primitives.test.tsx` asserts that class name on Badge variant="secondary".
- * The visual intent is `var(--surface-sunken)`, which maps to a warm off-white
- * close to slate-100 anyway.
+ * All variants use design tokens; no raw Tailwind color utilities.
  */
 const badgeVariants = cva(
   [
@@ -24,7 +20,7 @@ const badgeVariants = cva(
         default:
           "border-transparent bg-[var(--ink-primary)] text-[var(--ink-inverse)]",
         secondary:
-          "bg-slate-100 border-transparent text-[var(--ink-primary)] [background-color:var(--surface-sunken)]",
+          "border-transparent bg-[var(--surface-sunken)] text-[var(--ink-primary)]",
         outline:
           "border-[var(--border-hairline)] text-[var(--ink-secondary)] bg-transparent"
       }

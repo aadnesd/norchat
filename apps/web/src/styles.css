@@ -620,6 +620,28 @@ textarea:focus-visible {
   box-shadow: 0 0 0 3px var(--accent-wash);
 }
 
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--status-danger-ink);
+  background: var(--status-danger-wash);
+}
+
+input[aria-invalid="true"]:focus-visible,
+select[aria-invalid="true"]:focus-visible,
+textarea[aria-invalid="true"]:focus-visible {
+  border-color: var(--status-danger-ink);
+  box-shadow: 0 0 0 3px var(--status-danger-wash);
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  background: var(--surface-sunken);
+}
+
 textarea { resize: vertical; min-height: 96px; }
 
 /* Notice — inline editorial alert, not a rounded pill */
@@ -627,25 +649,27 @@ textarea { resize: vertical; min-height: 96px; }
   padding: var(--space-3) var(--space-4);
   font-size: var(--type-body-sm);
   font-weight: 500;
-  border-left: 2px solid currentColor;
+  border: 1px solid var(--border-hairline);
   background: var(--surface-sunken);
 }
 
 .notice.error {
   background: var(--status-danger-wash);
   color: var(--status-danger-ink);
+  border-color: var(--status-danger-ink);
 }
 
 .notice.success {
   background: var(--status-success-wash);
   color: var(--status-success-ink);
+  border-color: var(--status-success-ink);
 }
 
 /* Info card — sidebar-style annotation */
 .info-card {
   background: var(--surface-sunken);
   padding: var(--space-4);
-  border-left: 2px solid var(--accent-edge);
+  border: 1px solid var(--border-hairline);
   color: var(--ink-secondary);
   font-size: var(--type-body-sm);
   line-height: var(--leading-relaxed);
@@ -883,6 +907,33 @@ textarea { resize: vertical; min-height: 96px; }
 .insight-card .muted,
 .cta-strip .muted {
   color: color-mix(in oklch, var(--ink-inverse) 72%, transparent);
+}
+
+.cta-strip .eyebrow {
+  color: color-mix(in oklch, var(--ink-inverse) 70%, transparent);
+}
+
+.cta-strip h2 em {
+  color: var(--accent-edge);
+  font-style: normal;
+}
+
+.cta-strip .hero-cta-row {
+  margin-top: var(--space-3);
+}
+
+/* Inverse outline button — only valid inside dark surfaces (.cta-strip, .insight-card) */
+.cta-strip .btn-inverse,
+.insight-card .btn-inverse {
+  color: var(--ink-inverse);
+  border-color: color-mix(in oklch, var(--ink-inverse) 30%, transparent);
+  background: transparent;
+}
+
+.cta-strip .btn-inverse:hover,
+.insight-card .btn-inverse:hover {
+  border-color: var(--ink-inverse);
+  background: color-mix(in oklch, var(--ink-inverse) 8%, transparent);
 }
 
 /* ========================================================================

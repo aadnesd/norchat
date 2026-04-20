@@ -684,7 +684,7 @@ export const resolveRuntimeStatePath = (options?: {
 // reclaims a lock we keep a best-effort exclusive-create race so only one
 // waiter wins.
 
-import { openSync, closeSync, unlinkSync, statSync, writeSync } from "node:fs";
+import { openSync, closeSync, unlinkSync, statSync, writeSync, mkdirSync } from "node:fs";
 
 export type FileLockOptions = {
   /** How long to wait total (ms) before giving up. Default 10_000. */
@@ -713,7 +713,22 @@ const tryAcquireLock = (lockPath: string): boolean => {
     }
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      return false;
+    }
+    if (code === "ENOENT") {
+      // Parent directory does not exist yet (fresh install / cleared data
+      // dir). Create it and signal "not acquired" so the caller retries.
+      // The next tryAcquireLock will succeed because the parent now exists.
+      try {
+        mkdirSync(path.dirname(lockPath), { recursive: true });
+      } catch {
+        // If mkdir itself fails (permissions, race with another process),
+        // fall through and rethrow the original ENOENT so the caller sees
+        // a clear error rather than spinning silently.
+        throw error;
+      }
       return false;
     }
     throw error;

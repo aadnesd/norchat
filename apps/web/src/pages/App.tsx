@@ -288,6 +288,9 @@ export function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [settingsErrorField, setSettingsErrorField] = useState<
+    "basePrompt" | "model" | "minScore" | "maxResults" | null
+  >(null);
   const [settingsSuccess, setSettingsSuccess] = useState<string | null>(null);
   const [metricsSummary, setMetricsSummary] = useState<MetricsSummary | null>(null);
   const [metricConversations, setMetricConversations] = useState<MetricConversation[]>([]);
@@ -917,31 +920,37 @@ export function App() {
 
   const handleSaveAgentSettings = async () => {
     setSettingsSuccess(null);
+    setSettingsErrorField(null);
     if (!agent) {
       setSettingsError("Create an agent before updating settings.");
       return;
     }
     if (!basePrompt.trim()) {
       setSettingsError("Base prompt is required.");
+      setSettingsErrorField("basePrompt");
       return;
     }
     if (!settingsModel.trim()) {
       setSettingsError("Model is required.");
+      setSettingsErrorField("model");
       return;
     }
     const minScore = Number(settingsMinScore);
     if (!Number.isFinite(minScore) || minScore < 0 || minScore > 1) {
       setSettingsError("Min score must be between 0 and 1.");
+      setSettingsErrorField("minScore");
       return;
     }
     const maxResults = Number(settingsMaxResults);
     if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 10) {
       setSettingsError("Max results must be an integer from 1 to 10.");
+      setSettingsErrorField("maxResults");
       return;
     }
 
     setIsSavingSettings(true);
     setSettingsError(null);
+    setSettingsErrorField(null);
     setSettingsSuccess(null);
     try {
       const response = await apiClient.updateAgentSettings(agent.id, {
@@ -1609,7 +1618,12 @@ export function App() {
                     onChange={(event) => {
                       setBasePrompt(event.target.value);
                       setSettingsSuccess(null);
+                      if (settingsErrorField === "basePrompt") setSettingsErrorField(null);
                     }}
+                    aria-invalid={settingsErrorField === "basePrompt" || undefined}
+                    aria-describedby={
+                      settingsErrorField === "basePrompt" ? "settings-error" : undefined
+                    }
                   />
                 </label>
                 <label>
@@ -1619,7 +1633,12 @@ export function App() {
                     onChange={(event) => {
                       setSettingsModel(event.target.value);
                       setSettingsSuccess(null);
+                      if (settingsErrorField === "model") setSettingsErrorField(null);
                     }}
+                    aria-invalid={settingsErrorField === "model" || undefined}
+                    aria-describedby={
+                      settingsErrorField === "model" ? "settings-error" : undefined
+                    }
                   >
                     <option value="gpt-4.1">gpt-4.1</option>
                     <option value="gpt-4o-mini">gpt-4o-mini</option>
@@ -1637,7 +1656,12 @@ export function App() {
                     onChange={(event) => {
                       setSettingsMinScore(event.target.value);
                       setSettingsSuccess(null);
+                      if (settingsErrorField === "minScore") setSettingsErrorField(null);
                     }}
+                    aria-invalid={settingsErrorField === "minScore" || undefined}
+                    aria-describedby={
+                      settingsErrorField === "minScore" ? "settings-error" : undefined
+                    }
                   />
                 </label>
                 <label>
@@ -1651,7 +1675,12 @@ export function App() {
                     onChange={(event) => {
                       setSettingsMaxResults(event.target.value);
                       setSettingsSuccess(null);
+                      if (settingsErrorField === "maxResults") setSettingsErrorField(null);
                     }}
+                    aria-invalid={settingsErrorField === "maxResults" || undefined}
+                    aria-describedby={
+                      settingsErrorField === "maxResults" ? "settings-error" : undefined
+                    }
                   />
                 </label>
               </div>
@@ -1664,7 +1693,11 @@ export function App() {
             </>
           )}
 
-          {settingsError && <div className="notice error">{settingsError}</div>}
+          {settingsError && (
+            <div id="settings-error" className="notice error" role="alert">
+              {settingsError}
+            </div>
+          )}
           {settingsSuccess && <div className="notice success">{settingsSuccess}</div>}
         </div>
       </section>

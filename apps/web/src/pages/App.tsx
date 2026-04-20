@@ -1392,123 +1392,151 @@ export function App() {
               )}
               {isVoiceChannel(channelType) && (
                 <>
-                  <label>
-                    Voice locale
-                    <Input value={voiceLocale} onChange={(event) => setVoiceLocale(event.target.value)} />
-                  </label>
-                  <label>
-                    Voice name
-                    <Input value={voiceName} onChange={(event) => setVoiceName(event.target.value)} />
-                  </label>
-                  <label>
-                    Speaking rate (0.5-2.0)
-                    <Input
-                      value={voiceSpeakingRate}
-                      onChange={(event) => setVoiceSpeakingRate(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Twilio account SID
-                    <Input
-                      value={twilioAccountSid}
-                      onChange={(event) => setTwilioAccountSid(event.target.value)}
-                      placeholder="AC..."
-                    />
-                  </label>
-                  <label>
-                    Twilio auth token
-                    <Input
-                      type="password"
-                      value={twilioAuthToken}
-                      onChange={(event) => setTwilioAuthToken(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Twilio API key SID
-                    <Input
-                      value={twilioApiKeySid}
-                      onChange={(event) => setTwilioApiKeySid(event.target.value)}
-                      placeholder="SK..."
-                    />
-                  </label>
-                  <label>
-                    Twilio API key secret
-                    <Input
-                      type="password"
-                      value={twilioApiKeySecret}
-                      onChange={(event) => setTwilioApiKeySecret(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Twilio from number
-                    <Input
-                      value={twilioFromNumber}
-                      onChange={(event) => setTwilioFromNumber(event.target.value)}
-                      placeholder="+4712345678"
-                    />
-                  </label>
-                  <label>
-                    Twilio webhook base URL
-                    <Input
-                      value={twilioWebhookBaseUrl}
-                      onChange={(event) => setTwilioWebhookBaseUrl(event.target.value)}
-                      placeholder="https://api.example.com"
-                    />
-                  </label>
-                  <label>
-                    Twilio language
-                    <Input
-                      value={twilioLanguage}
-                      onChange={(event) => setTwilioLanguage(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Twilio voice
-                    <Input value={twilioVoice} onChange={(event) => setTwilioVoice(event.target.value)} />
-                  </label>
-                  <label>
-                    Validate Twilio signature
-                    <Select
-                      value={twilioValidateSignature ? "true" : "false"}
-                      onChange={(event) => setTwilioValidateSignature(event.target.value === "true")}
-                    >
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </Select>
-                  </label>
-                  <label>
-                    Twilio realtime streaming
-                    <Select
-                      value={twilioRealtimeEnabled ? "true" : "false"}
-                      onChange={(event) => setTwilioRealtimeEnabled(event.target.value === "true")}
-                    >
-                      <option value="false">Disabled</option>
-                      <option value="true">Enabled</option>
-                    </Select>
-                  </label>
-                  {twilioRealtimeEnabled && (
-                    <>
-                      <label>
-                        Realtime voice
-                        <Input
-                          value={twilioRealtimeVoice}
-                          onChange={(event) => setTwilioRealtimeVoice(event.target.value)}
-                          placeholder="alloy"
-                        />
-                      </label>
-                      <label>
-                        Realtime instructions
-                        <Textarea
-                          value={twilioRealtimeInstructions}
-                          onChange={(event) => setTwilioRealtimeInstructions(event.target.value)}
-                          rows={4}
-                        />
-                      </label>
-                    </>
-                  )}
+                  <fieldset className="field-group">
+                    <legend>Voice synthesis</legend>
+                    <label>
+                      Voice locale
+                      <Input
+                        value={voiceLocale}
+                        onChange={(event) => setVoiceLocale(event.target.value)}
+                        placeholder="nb-NO"
+                      />
+                    </label>
+                    <label>
+                      Voice name
+                      <Input
+                        value={voiceName}
+                        onChange={(event) => setVoiceName(event.target.value)}
+                        placeholder="nb-NO-Standard-A"
+                      />
+                    </label>
+                    <label>
+                      Speaking rate
+                      <Input
+                        value={voiceSpeakingRate}
+                        onChange={(event) => setVoiceSpeakingRate(event.target.value)}
+                      />
+                      <span className="field-hint">Accepted range 0.5–2.0</span>
+                    </label>
+                  </fieldset>
+
+                  <fieldset className="field-group">
+                    <legend>Twilio credentials</legend>
+                    <label>
+                      Twilio account SID
+                      <Input
+                        value={twilioAccountSid}
+                        onChange={(event) => setTwilioAccountSid(event.target.value)}
+                        placeholder="AC..."
+                      />
+                    </label>
+                    <label>
+                      Twilio auth token
+                      <Input
+                        type="password"
+                        value={twilioAuthToken}
+                        onChange={(event) => setTwilioAuthToken(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Twilio API key SID
+                      <Input
+                        value={twilioApiKeySid}
+                        onChange={(event) => setTwilioApiKeySid(event.target.value)}
+                        placeholder="SK..."
+                      />
+                    </label>
+                    <label>
+                      Twilio API key secret
+                      <Input
+                        type="password"
+                        value={twilioApiKeySecret}
+                        onChange={(event) => setTwilioApiKeySecret(event.target.value)}
+                      />
+                    </label>
+                  </fieldset>
+
+                  <fieldset className="field-group">
+                    <legend>Twilio behavior</legend>
+                    <label>
+                      Twilio from number
+                      <Input
+                        value={twilioFromNumber}
+                        onChange={(event) => setTwilioFromNumber(event.target.value)}
+                        placeholder="+4712345678"
+                      />
+                    </label>
+                    <label>
+                      Twilio webhook base URL
+                      <Input
+                        value={twilioWebhookBaseUrl}
+                        onChange={(event) => setTwilioWebhookBaseUrl(event.target.value)}
+                        placeholder="https://api.example.com"
+                      />
+                    </label>
+                    <label>
+                      Twilio language
+                      <Input
+                        value={twilioLanguage}
+                        onChange={(event) => setTwilioLanguage(event.target.value)}
+                        placeholder="nb-NO"
+                      />
+                    </label>
+                    <label>
+                      Twilio voice
+                      <Input
+                        value={twilioVoice}
+                        onChange={(event) => setTwilioVoice(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Validate Twilio signature
+                      <Select
+                        value={twilioValidateSignature ? "true" : "false"}
+                        onChange={(event) => setTwilioValidateSignature(event.target.value === "true")}
+                      >
+                        <option value="true">Enabled</option>
+                        <option value="false">Disabled</option>
+                      </Select>
+                    </label>
+                  </fieldset>
+
+                  <fieldset className="field-group">
+                    <legend>Realtime streaming</legend>
+                    <label>
+                      Twilio realtime streaming
+                      <Select
+                        value={twilioRealtimeEnabled ? "true" : "false"}
+                        onChange={(event) => setTwilioRealtimeEnabled(event.target.value === "true")}
+                      >
+                        <option value="false">Disabled</option>
+                        <option value="true">Enabled</option>
+                      </Select>
+                    </label>
+                    {twilioRealtimeEnabled && (
+                      <>
+                        <label>
+                          Realtime voice
+                          <Input
+                            value={twilioRealtimeVoice}
+                            onChange={(event) => setTwilioRealtimeVoice(event.target.value)}
+                            placeholder="alloy"
+                          />
+                        </label>
+                        <label>
+                          Realtime instructions
+                          <Textarea
+                            value={twilioRealtimeInstructions}
+                            onChange={(event) => setTwilioRealtimeInstructions(event.target.value)}
+                            rows={4}
+                          />
+                        </label>
+                      </>
+                    )}
+                  </fieldset>
                 </>
               )}
-              <div className="panel-controls" style={{ borderTop: "none", paddingTop: 0 }}>
+              <div className="panel-controls flush">
                 <Button
                   type="button"
                   variant="secondary"

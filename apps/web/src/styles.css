@@ -644,6 +644,49 @@ textarea:disabled {
 
 textarea { resize: vertical; min-height: 96px; }
 
+/* Field group — semantic fieldset for long forms.
+   Uses an eyebrow-styled legend; no border (hairlines come from surrounding panel). */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.field-group + .field-group {
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border-hairline);
+}
+
+.field-group > legend {
+  font-family: var(--font-body);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  font-size: var(--type-meta);
+  font-weight: 600;
+  color: var(--ink-tertiary);
+  padding: 0;
+  margin-bottom: var(--space-2);
+}
+
+/* Per-field helper text — small, secondary, renders below label text */
+.field-hint {
+  font-size: var(--type-meta);
+  font-weight: 400;
+  color: var(--ink-tertiary);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* Flush variant — used when panel-controls sit mid-panel, not at bottom */
+.panel-controls.flush {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
 /* Notice — inline editorial alert, not a rounded pill */
 .notice {
   padding: var(--space-3) var(--space-4);

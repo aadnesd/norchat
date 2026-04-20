@@ -1,15 +1,21 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import formbody from "@fastify/formbody";
+import fastifyWebsocket from "@fastify/websocket";
 import helmet from "@fastify/helmet";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import { z } from "zod";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import OpenAI, { AzureOpenAI } from "openai";
+import { OpenAIRealtimeWS } from "openai/realtime/ws";
+import twilio from "twilio";
 import {
   buildChatPrompt,
   buildChatResponse,
   chunkResponseForStreaming,
+  type ChatResponse,
   type SourceCitationInfo
 } from "./chat-runtime.js";
 import { buildEmbedding } from "./embeddings.js";
@@ -184,7 +190,8 @@ const channelTypeSchema = z.enum([
   "salesforce",
   "shopify",
   "zapier",
-  "wordpress"
+  "wordpress",
+  "voice_agent"
 ]);
 
 const connectorChannelTypes = new Set([
@@ -197,7 +204,8 @@ const connectorChannelTypes = new Set([
   "salesforce",
   "shopify",
   "zapier",
-  "wordpress"
+  "wordpress",
+  "voice_agent"
 ]);
 
 const channelSchema = z
@@ -240,6 +248,23 @@ type ChannelConfig = Record<string, unknown> & {
   allowedDomains?: string[];
   authToken?: string;
   verifyToken?: string;
+  voiceLocale?: string;
+  voiceName?: string;
+  speakingRate?: number;
+  twilioAccountSid?: string;
+  twilioAuthToken?: string;
+  twilioApiKeySid?: string;
+  twilioApiKeySecret?: string;
+  twilioFromNumber?: string;
+  twilioWebhookBaseUrl?: string;
+  twilioInitialPrompt?: string;
+  twilioReprompt?: string;
+  twilioLanguage?: string;
+  twilioVoice?: string;
+  twilioValidateSignature?: boolean;
+  twilioRealtimeEnabled?: boolean;
+  twilioRealtimeVoice?: string;
+  twilioRealtimeInstructions?: string;
 };
 
 type InboundMessage = {
@@ -588,25 +613,54 @@ const persistDurableRuntimeState = async (
   state: DurableRuntimeState
 ) => {
   // Guard the whole read-merge-write with a cross-process lock so the
-  // worker cannot slip in a job update between the rename we perform here
-  // and its own next claim/complete write (and vice versa). Inside the
-  // lock we also re-read the latest on-disk state and merge the
-  // worker-owned `ingestionJobs` field over our snapshot: the API process
-  // only mutates metrics/quota/audit data in-memory, so it must not
-  // clobber job state changes that the worker has already persisted.
+  // API and worker cannot clobber each other's ingestion-job writes. Both
+  // processes mutate `ingestionJobs`: the API creates them on source
+  // submission, the worker transitions their status. Inside the lock we
+  // re-read the current on-disk state and merge by job id, preferring the
+  // entry with the most progressed state (by status rank, then latest
+  // activity timestamp). Other fields (metrics/quota/audit) are only
+  // written by the API, so the snapshot values win for those.
   await withFileLock(runtimeStateLockPath(filePath), async () => {
     let merged = state;
     try {
       const existingRaw = await fs.readFile(filePath, "utf8");
       const existing = JSON.parse(existingRaw) as Partial<DurableRuntimeState>;
       if (Array.isArray(existing.ingestionJobs)) {
-        merged = { ...state, ingestionJobs: existing.ingestionJobs as DurableRuntimeState["ingestionJobs"] };
+        const statusRank: Record<string, number> = {
+          queued: 0,
+          processing: 1,
+          failed: 2,
+          complete: 3
+        };
+        type JobEntry = DurableRuntimeState["ingestionJobs"][number];
+        const jobActivity = (job: JobEntry) =>
+          job.completedAt ?? job.nextAttemptAt ?? job.startedAt ?? job.createdAt ?? "";
+        const isMoreProgressed = (a: JobEntry, b: JobEntry) => {
+          const ra = statusRank[a.status] ?? 0;
+          const rb = statusRank[b.status] ?? 0;
+          if (ra !== rb) return ra > rb;
+          const aa = jobActivity(a);
+          const ba = jobActivity(b);
+          if (aa !== ba) return aa > ba;
+          return (a.attempts ?? 0) > (b.attempts ?? 0);
+        };
+        const byId = new Map<string, JobEntry>();
+        for (const job of state.ingestionJobs) {
+          byId.set(job.id, job);
+        }
+        for (const job of existing.ingestionJobs as JobEntry[]) {
+          const current = byId.get(job.id);
+          if (!current || isMoreProgressed(job, current)) {
+            byId.set(job.id, job);
+          }
+        }
+        merged = { ...state, ingestionJobs: Array.from(byId.values()) };
       }
     } catch (error) {
       // Missing or unparseable file: fall back to the in-memory snapshot.
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         // Swallow parse errors but do not overwrite job state on them —
-        // the next worker write will repair the file.
+        // the next write will repair the file.
       }
     }
     await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -642,6 +696,62 @@ type RuntimePersistenceObservability = {
   lastFailureMessage?: string;
 };
 
+type ChatCompletionProviderInput = {
+  prompt: string;
+  model?: string;
+};
+
+type ChatCompletionProvider = (
+  input: ChatCompletionProviderInput
+) => Promise<string>;
+
+type AzureOpenAIProviderConfig = {
+  endpoint: string;
+  apiKey: string;
+  deployment: string;
+  apiVersion: string;
+  model?: string;
+  temperature: number;
+  maxTokens: number;
+};
+
+type AzureOpenAIRealtimeConfig = {
+  endpoint: string;
+  apiKey: string;
+  deployment: string;
+  apiVersion: string;
+  voice: string;
+  instructions?: string;
+  maxOutputTokens: number | "inf";
+};
+
+type TwilioRealtimeStreamToken = {
+  channelId: string;
+  expiresAt: number;
+};
+
+type TwilioCallRequest = {
+  to: string;
+  from: string;
+  url: string;
+};
+
+type TwilioCallResult = {
+  sid: string;
+  status?: string;
+  to?: string;
+  from?: string;
+};
+
+type TwilioCallCreator = (
+  input: TwilioCallRequest & {
+    accountSid: string;
+    authToken?: string;
+    apiKeySid?: string;
+    apiKeySecret?: string;
+  }
+) => Promise<TwilioCallResult>;
+
 type BuildServerOptions = {
   vectorStoreDir?: string;
   runtimeStoreDir?: string;
@@ -651,6 +761,8 @@ type BuildServerOptions = {
   ) => Promise<void>;
   runtimePersistRetry?: RuntimePersistRetryOptions;
   runtimeStateCaps?: RuntimeStateCapOptions;
+  chatCompletionProvider?: ChatCompletionProvider;
+  twilioCallCreator?: TwilioCallCreator;
 };
 
 const resolveNonNegativeInt = (value: number | string | undefined, fallback: number) => {
@@ -667,6 +779,296 @@ const resolvePositiveInt = (value: number | string | undefined, fallback: number
     return fallback;
   }
   return Math.floor(parsed);
+};
+
+const resolveNumberWithinRange = (
+  value: number | string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+) => {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const getTrimmedValue = (value: string | undefined) => {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+};
+
+const parseBooleanValue = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+};
+
+const MODEL_PROVIDER_AZURE_OPENAI = "azure_openai";
+const DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21";
+const DEFAULT_AZURE_OPENAI_TEMPERATURE = 0.2;
+const DEFAULT_AZURE_OPENAI_MAX_TOKENS = 450;
+const DEFAULT_AZURE_OPENAI_REALTIME_VOICE = "alloy";
+const DEFAULT_AZURE_OPENAI_REALTIME_MAX_OUTPUT_TOKENS = 1024;
+const DEFAULT_TWILIO_REALTIME_STREAM_TOKEN_TTL_MS = 5 * 60 * 1000;
+
+const resolveAzureOpenAIProviderConfig = (): AzureOpenAIProviderConfig | undefined => {
+  const provider = getTrimmedValue(process.env.MODEL_PROVIDER)?.toLowerCase();
+  if (!provider || provider !== MODEL_PROVIDER_AZURE_OPENAI) {
+    return undefined;
+  }
+  const endpoint = getTrimmedValue(process.env.AZURE_OPENAI_ENDPOINT);
+  const apiKey = getTrimmedValue(process.env.AZURE_OPENAI_API_KEY);
+  const deployment = getTrimmedValue(process.env.AZURE_OPENAI_DEPLOYMENT);
+  const model = getTrimmedValue(process.env.AZURE_OPENAI_MODEL);
+  const apiVersion =
+    getTrimmedValue(process.env.AZURE_OPENAI_API_VERSION) ??
+    DEFAULT_AZURE_OPENAI_API_VERSION;
+  const missing: string[] = [];
+  if (!endpoint) {
+    missing.push("AZURE_OPENAI_ENDPOINT");
+  }
+  if (!apiKey) {
+    missing.push("AZURE_OPENAI_API_KEY");
+  }
+  if (!deployment) {
+    missing.push("AZURE_OPENAI_DEPLOYMENT");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `missing_azure_openai_configuration:${missing.join(",")}`
+    );
+  }
+  const azureEndpoint = endpoint;
+  const azureApiKey = apiKey;
+  const azureDeployment = deployment;
+  if (!azureEndpoint || !azureApiKey || !azureDeployment) {
+    throw new Error("invalid_azure_openai_configuration");
+  }
+  const temperature = resolveNumberWithinRange(
+    process.env.AZURE_OPENAI_TEMPERATURE,
+    DEFAULT_AZURE_OPENAI_TEMPERATURE,
+    0,
+    2
+  );
+  const maxTokens = Math.max(
+    1,
+    resolveNonNegativeInt(
+      process.env.AZURE_OPENAI_MAX_TOKENS,
+      DEFAULT_AZURE_OPENAI_MAX_TOKENS
+    )
+  );
+  return {
+    endpoint: azureEndpoint,
+    apiKey: azureApiKey,
+    deployment: azureDeployment,
+    apiVersion,
+    model,
+    temperature,
+    maxTokens
+  };
+};
+
+const resolveAzureOpenAIRealtimeConfig = (): AzureOpenAIRealtimeConfig | undefined => {
+  const provider = getTrimmedValue(process.env.MODEL_PROVIDER)?.toLowerCase();
+  if (!provider || provider !== MODEL_PROVIDER_AZURE_OPENAI) {
+    return undefined;
+  }
+  const endpoint = getTrimmedValue(process.env.AZURE_OPENAI_ENDPOINT);
+  const apiKey = getTrimmedValue(process.env.AZURE_OPENAI_API_KEY);
+  const deployment =
+    getTrimmedValue(process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT) ??
+    getTrimmedValue(process.env.AZURE_OPENAI_DEPLOYMENT);
+  if (!endpoint || !apiKey || !deployment) {
+    return undefined;
+  }
+  const apiVersion =
+    getTrimmedValue(process.env.AZURE_OPENAI_API_VERSION) ??
+    DEFAULT_AZURE_OPENAI_API_VERSION;
+  const voice =
+    getTrimmedValue(process.env.AZURE_OPENAI_REALTIME_VOICE) ??
+    DEFAULT_AZURE_OPENAI_REALTIME_VOICE;
+  const instructions = getTrimmedValue(process.env.AZURE_OPENAI_REALTIME_INSTRUCTIONS);
+  const maxOutputTokensRaw = getTrimmedValue(
+    process.env.AZURE_OPENAI_REALTIME_MAX_OUTPUT_TOKENS
+  );
+  let maxOutputTokens: number | "inf" = DEFAULT_AZURE_OPENAI_REALTIME_MAX_OUTPUT_TOKENS;
+  if (maxOutputTokensRaw?.toLowerCase() === "inf") {
+    maxOutputTokens = "inf";
+  } else if (maxOutputTokensRaw) {
+    maxOutputTokens = Math.min(
+      Math.max(1, resolveNonNegativeInt(maxOutputTokensRaw, DEFAULT_AZURE_OPENAI_REALTIME_MAX_OUTPUT_TOKENS)),
+      4096
+    );
+  }
+  return {
+    endpoint,
+    apiKey,
+    deployment,
+    apiVersion,
+    voice,
+    instructions,
+    maxOutputTokens
+  };
+};
+
+const createAzureOpenAIChatCompletionProvider = (
+  config: AzureOpenAIProviderConfig
+): ChatCompletionProvider => {
+  const normalizedEndpoint = config.endpoint.replace(/\/+$/u, "");
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: `${normalizedEndpoint}/openai/deployments/${config.deployment}`,
+    defaultQuery: { "api-version": config.apiVersion },
+    defaultHeaders: { "api-key": config.apiKey }
+  });
+  return async (input) => {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      {
+        role: "system",
+        content:
+          "You are a helpful support assistant for a Norwegian business. " +
+          "Answer concisely and rely on provided context. " +
+          "If context does not answer the question, clearly state uncertainty and suggest escalation."
+      },
+      {
+        role: "user",
+        content: input.prompt
+      }
+    ];
+    const model = input.model?.trim() || config.model || config.deployment;
+    const requestCompletion = (maxCompletionTokens: number) =>
+      client.chat.completions.create({
+        model,
+        temperature: config.temperature,
+        max_completion_tokens: maxCompletionTokens,
+        messages
+      });
+
+    let completion: Awaited<ReturnType<typeof requestCompletion>>;
+    try {
+      completion = await requestCompletion(config.maxTokens);
+    } catch (error) {
+      const status =
+        isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      const shouldRetryWithHigherOutputBudget =
+        status === 400 &&
+        /max_tokens|model output limit was reached/iu.test(message);
+      if (!shouldRetryWithHigherOutputBudget) {
+        throw error;
+      }
+      const retryMaxCompletionTokens = Math.min(
+        Math.max(config.maxTokens * 2, config.maxTokens + 256),
+        4096
+      );
+      completion = await requestCompletion(retryMaxCompletionTokens);
+    }
+    const content = completion.choices[0]?.message?.content;
+    if (typeof content === "string") {
+      const text = content.trim();
+      if (text.length > 0) {
+        return text;
+      }
+    }
+    if (Array.isArray(content)) {
+      const textParts: string[] = [];
+      for (const part of content) {
+        if (!isRecord(part)) {
+          continue;
+        }
+        const isTextPart = part.type === "text";
+        const text = part.text;
+        if (!isTextPart || typeof text !== "string") {
+          continue;
+        }
+        const normalized = text.trim();
+        if (normalized.length > 0) {
+          textParts.push(normalized);
+        }
+      }
+      if (textParts.length > 0) {
+        return textParts.join(" ");
+      }
+    }
+    throw new Error("model_empty_response");
+  };
+};
+
+const createAzureOpenAIRealtimeSocket = async (
+  config: AzureOpenAIRealtimeConfig
+) => {
+  const client = new AzureOpenAI({
+    endpoint: config.endpoint,
+    apiKey: config.apiKey,
+    apiVersion: config.apiVersion,
+    deployment: config.deployment
+  });
+  const realtime = await OpenAIRealtimeWS.azure(client, {
+    deploymentName: config.deployment
+  });
+  await new Promise<void>((resolve, reject) => {
+    const onOpen = () => {
+      realtime.socket.off("error", onError);
+      resolve();
+    };
+    const onError = (error: Error) => {
+      realtime.socket.off("open", onOpen);
+      reject(error);
+    };
+    realtime.socket.once("open", onOpen);
+    realtime.socket.once("error", onError);
+  });
+  return realtime;
+};
+
+const issueTwilioRealtimeStreamToken = (input: {
+  tokens: Map<string, TwilioRealtimeStreamToken>;
+  channelId: string;
+}) => {
+  const now = Date.now();
+  for (const [token, session] of input.tokens) {
+    if (session.expiresAt <= now) {
+      input.tokens.delete(token);
+    }
+  }
+  const token = crypto.randomUUID().replace(/-/gu, "");
+  input.tokens.set(token, {
+    channelId: input.channelId,
+    expiresAt: now + DEFAULT_TWILIO_REALTIME_STREAM_TOKEN_TTL_MS
+  });
+  return token;
+};
+
+const consumeTwilioRealtimeStreamToken = (input: {
+  tokens: Map<string, TwilioRealtimeStreamToken>;
+  token: string;
+  channelId: string;
+}) => {
+  const now = Date.now();
+  for (const [storedToken, session] of input.tokens) {
+    if (session.expiresAt <= now) {
+      input.tokens.delete(storedToken);
+    }
+  }
+  const session = input.tokens.get(input.token);
+  if (!session || session.channelId !== input.channelId) {
+    return false;
+  }
+  input.tokens.delete(input.token);
+  return true;
 };
 
 const normalizeAllowedDomain = (domain: string) => {
@@ -716,11 +1118,136 @@ const normalizeChannelConfig = (
     typeof config.authToken === "string" ? config.authToken.trim() : undefined;
   const verifyToken =
     typeof config.verifyToken === "string" ? config.verifyToken.trim() : undefined;
+  const voiceLocale =
+    typeof config.voiceLocale === "string" ? config.voiceLocale.trim() : undefined;
+  const voiceName =
+    typeof config.voiceName === "string" ? config.voiceName.trim() : undefined;
+  const speakingRateRaw =
+    typeof config.speakingRate === "number" ? config.speakingRate : undefined;
+  const speakingRate =
+    speakingRateRaw !== undefined && Number.isFinite(speakingRateRaw)
+      ? Math.max(0.5, Math.min(2, speakingRateRaw))
+      : undefined;
+  const twilioAccountSid =
+    typeof config.twilioAccountSid === "string"
+      ? config.twilioAccountSid.trim()
+      : undefined;
+  const twilioAuthToken =
+    typeof config.twilioAuthToken === "string"
+      ? config.twilioAuthToken.trim()
+      : undefined;
+  const twilioApiKeySid =
+    typeof config.twilioApiKeySid === "string"
+      ? config.twilioApiKeySid.trim()
+      : undefined;
+  const twilioApiKeySecret =
+    typeof config.twilioApiKeySecret === "string"
+      ? config.twilioApiKeySecret.trim()
+      : undefined;
+  const twilioFromNumber =
+    typeof config.twilioFromNumber === "string"
+      ? config.twilioFromNumber.trim()
+      : undefined;
+  const twilioWebhookBaseUrl =
+    typeof config.twilioWebhookBaseUrl === "string"
+      ? config.twilioWebhookBaseUrl.trim()
+      : undefined;
+  const twilioInitialPrompt =
+    typeof config.twilioInitialPrompt === "string"
+      ? config.twilioInitialPrompt.trim()
+      : undefined;
+  const twilioReprompt =
+    typeof config.twilioReprompt === "string"
+      ? config.twilioReprompt.trim()
+      : undefined;
+  const twilioLanguage =
+    typeof config.twilioLanguage === "string"
+      ? config.twilioLanguage.trim()
+      : undefined;
+  const twilioVoice =
+    typeof config.twilioVoice === "string" ? config.twilioVoice.trim() : undefined;
+  const twilioValidateSignature = parseBooleanValue(config.twilioValidateSignature);
+  const twilioRealtimeEnabled = parseBooleanValue(config.twilioRealtimeEnabled);
+  const twilioRealtimeVoice =
+    typeof config.twilioRealtimeVoice === "string"
+      ? config.twilioRealtimeVoice.trim()
+      : undefined;
+  const twilioRealtimeInstructions =
+    typeof config.twilioRealtimeInstructions === "string"
+      ? config.twilioRealtimeInstructions.trim()
+      : undefined;
   return {
     ...config,
     allowedDomains: normalizeAllowedDomains(allowedDomains),
     authToken: authToken || undefined,
-    verifyToken: verifyToken || undefined
+    verifyToken: verifyToken || undefined,
+    voiceLocale: voiceLocale || undefined,
+    voiceName: voiceName || undefined,
+    speakingRate,
+    twilioAccountSid: twilioAccountSid || undefined,
+    twilioAuthToken: twilioAuthToken || undefined,
+    twilioApiKeySid: twilioApiKeySid || undefined,
+    twilioApiKeySecret: twilioApiKeySecret || undefined,
+    twilioFromNumber: twilioFromNumber || undefined,
+    twilioWebhookBaseUrl: twilioWebhookBaseUrl || undefined,
+    twilioInitialPrompt: twilioInitialPrompt || undefined,
+    twilioReprompt: twilioReprompt || undefined,
+    twilioLanguage: twilioLanguage || undefined,
+    twilioVoice: twilioVoice || undefined,
+    twilioValidateSignature,
+    twilioRealtimeEnabled,
+    twilioRealtimeVoice: twilioRealtimeVoice || undefined,
+    twilioRealtimeInstructions: twilioRealtimeInstructions || undefined
+  };
+};
+
+const DEFAULT_VOICE_LOCALE = "nb-NO";
+const DEFAULT_VOICE_NAME = "nb-NO-Standard-A";
+const DEFAULT_VOICE_SPEAKING_RATE = 1;
+
+const escapeXml = (value: string) =>
+  value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;")
+    .replace(/'/gu, "&apos;");
+
+const buildVoiceSsml = (input: {
+  text: string;
+  locale: string;
+  voiceName: string;
+  speakingRate: number;
+}) => {
+  const speakingRatePercent = Math.round(input.speakingRate * 100);
+  return (
+    `<speak version="1.0" xml:lang="${escapeXml(input.locale)}">` +
+    `<voice name="${escapeXml(input.voiceName)}">` +
+    `<prosody rate="${speakingRatePercent}%">${escapeXml(input.text)}</prosody>` +
+    "</voice></speak>"
+  );
+};
+
+const buildVoiceReplyPayload = (response: ChatResponse, channel: Channel) => {
+  const voiceLocale = channel.config?.voiceLocale ?? DEFAULT_VOICE_LOCALE;
+  const voiceName = channel.config?.voiceName ?? DEFAULT_VOICE_NAME;
+  const speakingRate = channel.config?.speakingRate ?? DEFAULT_VOICE_SPEAKING_RATE;
+  return {
+    ...response,
+    speech: {
+      text: response.message,
+      ssml: buildVoiceSsml({
+        text: response.message,
+        locale: voiceLocale,
+        voiceName,
+        speakingRate
+      }),
+      voice: {
+        locale: voiceLocale,
+        name: voiceName,
+        speakingRate
+      }
+    }
   };
 };
 
@@ -731,6 +1258,254 @@ const pickFirstString = (...values: Array<unknown>) => {
     }
   }
   return undefined;
+};
+
+type TwilioChannelSettings = {
+  accountSid?: string;
+  authToken?: string;
+  apiKeySid?: string;
+  apiKeySecret?: string;
+  fromNumber?: string;
+  webhookBaseUrl?: string;
+  initialPrompt: string;
+  reprompt: string;
+  language: string;
+  voice?: string;
+  validateSignature: boolean;
+  realtimeEnabled: boolean;
+  realtimeVoice?: string;
+  realtimeInstructions?: string;
+};
+
+const DEFAULT_TWILIO_LANGUAGE = "nb-NO";
+const DEFAULT_TWILIO_INITIAL_PROMPT = "Hei! Hvordan kan jeg hjelpe deg i dag?";
+const DEFAULT_TWILIO_REPROMPT = "Kan jeg hjelpe deg med noe mer?";
+
+const getHeaderString = (value: unknown) => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.find((item): item is string => typeof item === "string");
+  }
+  return undefined;
+};
+
+const resolveExternalBaseUrl = (input: {
+  headers: Record<string, unknown>;
+  fallbackProtocol?: string;
+  configuredBaseUrl?: string;
+}) => {
+  const configured = getTrimmedValue(input.configuredBaseUrl);
+  if (configured) {
+    return configured.replace(/\/+$/u, "");
+  }
+  const hostHeader = pickFirstString(
+    getHeaderString(input.headers["x-forwarded-host"]),
+    getHeaderString(input.headers.host)
+  );
+  if (!hostHeader) {
+    return undefined;
+  }
+  const protocol =
+    pickFirstString(
+      getHeaderString(input.headers["x-forwarded-proto"]),
+      input.fallbackProtocol
+    ) ?? "https";
+  const normalizedProtocol = protocol.split(",")[0]?.trim() || "https";
+  const normalizedHost = hostHeader.split(",")[0]?.trim();
+  if (!normalizedHost) {
+    return undefined;
+  }
+  return `${normalizedProtocol}://${normalizedHost}`;
+};
+
+const buildExternalUrl = (input: {
+  routePath: string;
+  headers: Record<string, unknown>;
+  fallbackProtocol?: string;
+  configuredBaseUrl?: string;
+}) => {
+  const baseUrl = resolveExternalBaseUrl(input);
+  if (!baseUrl) {
+    return undefined;
+  }
+  const routePath = input.routePath.startsWith("/")
+    ? input.routePath
+    : `/${input.routePath}`;
+  return `${baseUrl}${routePath}`;
+};
+
+const resolveTwilioChannelSettings = (channel: Channel): TwilioChannelSettings => {
+  const accountSid = getTrimmedValue(
+    channel.config?.twilioAccountSid ?? process.env.TWILIO_ACCOUNT_SID
+  );
+  const authToken = getTrimmedValue(
+    channel.config?.twilioAuthToken ?? process.env.TWILIO_AUTH_TOKEN
+  );
+  const apiKeySid = getTrimmedValue(
+    channel.config?.twilioApiKeySid ?? process.env.TWILIO_API_KEY_SID
+  );
+  const apiKeySecret = getTrimmedValue(
+    channel.config?.twilioApiKeySecret ?? process.env.TWILIO_API_KEY_SECRET
+  );
+  const fromNumber = getTrimmedValue(
+    channel.config?.twilioFromNumber ?? process.env.TWILIO_FROM_NUMBER
+  );
+  const webhookBaseUrl = getTrimmedValue(
+    channel.config?.twilioWebhookBaseUrl ?? process.env.TWILIO_WEBHOOK_BASE_URL
+  );
+  const initialPrompt =
+    getTrimmedValue(channel.config?.twilioInitialPrompt) ??
+    DEFAULT_TWILIO_INITIAL_PROMPT;
+  const reprompt =
+    getTrimmedValue(channel.config?.twilioReprompt) ??
+    DEFAULT_TWILIO_REPROMPT;
+  const language =
+    getTrimmedValue(channel.config?.twilioLanguage) ??
+    channel.config?.voiceLocale ??
+    DEFAULT_TWILIO_LANGUAGE;
+  const voice = getTrimmedValue(channel.config?.twilioVoice);
+  const validateSignature =
+    parseBooleanValue(
+      channel.config?.twilioValidateSignature ??
+        process.env.TWILIO_VALIDATE_SIGNATURE
+    ) ?? true;
+  const realtimeEnabled =
+    parseBooleanValue(
+      channel.config?.twilioRealtimeEnabled ?? process.env.TWILIO_REALTIME_ENABLED
+    ) ?? false;
+  const realtimeVoice =
+    getTrimmedValue(channel.config?.twilioRealtimeVoice) ??
+    getTrimmedValue(process.env.TWILIO_REALTIME_VOICE) ??
+    getTrimmedValue(process.env.AZURE_OPENAI_REALTIME_VOICE);
+  const realtimeInstructions = getTrimmedValue(
+    channel.config?.twilioRealtimeInstructions ??
+      process.env.TWILIO_REALTIME_INSTRUCTIONS
+  );
+  return {
+    accountSid,
+    authToken,
+    apiKeySid,
+    apiKeySecret,
+    fromNumber,
+    webhookBaseUrl,
+    initialPrompt,
+    reprompt,
+    language,
+    voice,
+    validateSignature,
+    realtimeEnabled,
+    realtimeVoice,
+    realtimeInstructions
+  };
+};
+
+const validateTwilioWebhookRequest = (input: {
+  settings: TwilioChannelSettings;
+  signature?: string;
+  requestUrl: string;
+  body: Record<string, unknown>;
+}) => {
+  if (!input.settings.validateSignature) {
+    return true;
+  }
+  if (!input.signature || !input.settings.authToken) {
+    return false;
+  }
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input.body)) {
+    if (value === undefined || value === null) {
+      continue;
+    }
+    params[key] = String(value);
+  }
+  return twilio.validateRequest(
+    input.settings.authToken,
+    input.signature,
+    input.requestUrl,
+    params
+  );
+};
+
+const createTwimlGatherResponse = (input: {
+  prompt: string;
+  actionUrl: string;
+  language: string;
+  voice?: string;
+}) => {
+  const voiceResponse = new twilio.twiml.VoiceResponse();
+  const gatherAttributes: Record<string, string> = {
+    input: "speech",
+    speechTimeout: "auto",
+    method: "POST",
+    action: input.actionUrl,
+    language: input.language
+  };
+  const sayAttributes: Record<string, string> = {
+    language: input.language
+  };
+  if (input.voice) {
+    sayAttributes.voice = input.voice;
+  }
+
+  const gather = voiceResponse.addChild("Gather", gatherAttributes);
+  gather.addChild("Say", sayAttributes).addText(input.prompt);
+  voiceResponse
+    .addChild("Say", sayAttributes)
+    .addText("Beklager, jeg horte ingenting. Ring gjerne igjen.");
+  voiceResponse.hangup();
+  return voiceResponse.toString();
+};
+
+const createTwimlRealtimeStreamResponse = (input: {
+  streamUrl: string;
+  prompt?: string;
+  language?: string;
+  voice?: string;
+}) => {
+  const voiceResponse = new twilio.twiml.VoiceResponse();
+  const sayAttributes: Record<string, string> = {};
+  if (input.language) {
+    sayAttributes.language = input.language;
+  }
+  if (input.voice) {
+    sayAttributes.voice = input.voice;
+  }
+  if (input.prompt) {
+    voiceResponse.addChild("Say", sayAttributes).addText(input.prompt);
+  }
+  const connect = voiceResponse.addChild("Connect", {});
+  connect.addChild("Stream", { url: input.streamUrl });
+  return voiceResponse.toString();
+};
+
+const createTwilioCallWithSdk: TwilioCallCreator = async (input) => {
+  let client:
+    | ReturnType<typeof twilio>
+    | undefined;
+  if (input.apiKeySid && input.apiKeySecret) {
+    client = twilio(input.apiKeySid, input.apiKeySecret, {
+      accountSid: input.accountSid
+    });
+  } else if (input.authToken) {
+    client = twilio(input.accountSid, input.authToken);
+  }
+  if (!client) {
+    throw new Error("twilio_credentials_missing");
+  }
+  const call = await client.calls.create({
+    to: input.to,
+    from: input.from,
+    url: input.url,
+    method: "POST"
+  });
+  return {
+    sid: call.sid,
+    status: call.status,
+    to: call.to,
+    from: call.from
+  };
 };
 
 const getAuthTokenFromHeaders = (headers: Record<string, unknown>) => {
@@ -1174,6 +1949,59 @@ const parseWordpressWebhook = (payload: Record<string, unknown>): WebhookParseRe
   };
 };
 
+const parseVoiceAgentWebhook = (payload: Record<string, unknown>): WebhookParseResult => {
+  const input = getRecord(payload.input);
+  const caller = getRecord(payload.caller);
+  const metadata = getRecord(payload.metadata);
+  const provider = pickFirstString(payload.provider);
+  const transcript = pickFirstString(
+    payload.transcript,
+    payload.message,
+    payload.text,
+    input?.transcript,
+    input?.message,
+    input?.text
+  );
+  if (!transcript) {
+    return { kind: "error", error: "voice_transcript_missing" };
+  }
+  const userId = pickFirstString(
+    payload.userId,
+    payload.user_id,
+    payload.callerId,
+    payload.caller_id,
+    caller?.id,
+    caller?.phone,
+    caller?.number
+  );
+  const threadKey = pickFirstString(
+    payload.sessionId,
+    payload.session_id,
+    payload.callId,
+    payload.call_id,
+    payload.conversationId,
+    payload.conversation_id,
+    payload.threadKey,
+    payload.thread_key,
+    userId
+  );
+  return {
+    kind: "message",
+    message: {
+      message: transcript,
+      userId,
+      threadKey,
+      metadata: {
+        ...metadata,
+        transcript,
+        callId: pickFirstString(payload.callId, payload.call_id),
+        sessionId: pickFirstString(payload.sessionId, payload.session_id),
+        ...(provider ? { provider } : {})
+      }
+    }
+  };
+};
+
 const parseChannelWebhookPayload = (
   channelType: z.infer<typeof channelTypeSchema>,
   payload: Record<string, unknown>
@@ -1199,6 +2027,8 @@ const parseChannelWebhookPayload = (
       return parseZapierWebhook(payload);
     case "wordpress":
       return parseWordpressWebhook(payload);
+    case "voice_agent":
+      return parseVoiceAgentWebhook(payload);
     default:
       return { kind: "error", error: "channel_not_supported" };
   }
@@ -1587,6 +2417,8 @@ export const buildServer = async (options?: BuildServerOptions) => {
   };
 
   await fastify.register(cors, { origin: true });
+  await fastify.register(formbody);
+  await fastify.register(fastifyWebsocket);
   await fastify.register(helmet);
   await fastify.register(swagger, {
     openapi: {
@@ -1612,6 +2444,40 @@ export const buildServer = async (options?: BuildServerOptions) => {
       responseSizeBytes: getContentLength(reply.getHeader("content-length"))
     });
   });
+
+  const azureOpenAIProviderConfig = resolveAzureOpenAIProviderConfig();
+  const azureOpenAIRealtimeConfig = resolveAzureOpenAIRealtimeConfig();
+  const chatCompletionProvider =
+    options?.chatCompletionProvider ??
+    (azureOpenAIProviderConfig
+      ? createAzureOpenAIChatCompletionProvider(azureOpenAIProviderConfig)
+      : undefined);
+  if (chatCompletionProvider && azureOpenAIProviderConfig) {
+    fastify.log.info(
+      {
+        provider: MODEL_PROVIDER_AZURE_OPENAI,
+        endpoint: azureOpenAIProviderConfig.endpoint,
+        deployment: azureOpenAIProviderConfig.deployment,
+        apiVersion: azureOpenAIProviderConfig.apiVersion
+      },
+      "chat model provider enabled"
+    );
+  }
+  if (azureOpenAIRealtimeConfig) {
+    fastify.log.info(
+      {
+        provider: MODEL_PROVIDER_AZURE_OPENAI,
+        endpoint: azureOpenAIRealtimeConfig.endpoint,
+        deployment: azureOpenAIRealtimeConfig.deployment,
+        apiVersion: azureOpenAIRealtimeConfig.apiVersion,
+        voice: azureOpenAIRealtimeConfig.voice
+      },
+      "realtime model provider available"
+    );
+  }
+  const twilioCallCreator =
+    options?.twilioCallCreator ?? createTwilioCallWithSdk;
+  const twilioRealtimeStreamTokens = new Map<string, TwilioRealtimeStreamToken>();
 
   const vectorStoreDir =
     options?.vectorStoreDir ??
@@ -2465,11 +3331,34 @@ export const buildServer = async (options?: BuildServerOptions) => {
       context,
       sourceLookup
     });
-    const response = buildChatResponse({
+    const fallbackResponse = buildChatResponse({
       message: input.message,
       context,
       sourceLookup
     });
+    let response = fallbackResponse;
+    if (chatCompletionProvider) {
+      try {
+        const modelMessage = await chatCompletionProvider({
+          prompt,
+          model: agent.model
+        });
+        response = {
+          ...fallbackResponse,
+          message: modelMessage
+        };
+      } catch (error) {
+        fastify.log.error(
+          {
+            err: error,
+            agentId: agent.id,
+            provider: MODEL_PROVIDER_AZURE_OPENAI
+          },
+          "chat model provider request failed"
+        );
+        throw createTypedError({ code: "model_provider_failed", statusCode: 502 });
+      }
+    }
     return { agent, tenant, response, prompt, context };
   };
 
@@ -2646,6 +3535,59 @@ export const buildServer = async (options?: BuildServerOptions) => {
       timestamp: conversation.startedAt
     });
     return conversation;
+  };
+
+  const processInboundChannelMessage = async (input: {
+    channel: Channel;
+    inbound: InboundMessage;
+  }) => {
+    const conversation = getOrCreateConversation({
+      channel: input.channel,
+      userId: input.inbound.userId,
+      threadKey: input.inbound.threadKey
+    });
+    recordMetricEvent({
+      type: "message_sent",
+      agentId: input.channel.agentId,
+      channelId: input.channel.id,
+      conversationId: conversation.id,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        role: "user"
+      }
+    });
+    const { response, prompt } = await runChatFlow({
+      agentId: input.channel.agentId,
+      message: input.inbound.message
+    });
+    recordMetricEvent({
+      type: "message_sent",
+      agentId: input.channel.agentId,
+      channelId: input.channel.id,
+      conversationId: conversation.id,
+      timestamp: new Date().toISOString(),
+      metadata: {
+        role: "assistant",
+        sourceCount: response.sources.length
+      }
+    });
+    const escalation = maybeDispatchAutoEscalation({
+      agentId: input.channel.agentId,
+      message: input.inbound.message,
+      response,
+      channel: input.channel,
+      conversation
+    });
+    const replyPayload =
+      input.channel.type === "voice_agent"
+        ? buildVoiceReplyPayload(response, input.channel)
+        : response;
+    return {
+      conversation,
+      prompt,
+      reply: escalation ? { ...replyPayload, escalation } : replyPayload,
+      metadata: input.inbound.metadata
+    };
   };
 
   const buildMetricWindow = (input: { from?: string; to?: string }) => {
@@ -3742,49 +4684,16 @@ export const buildServer = async (options?: BuildServerOptions) => {
       return;
     }
     try {
-      const conversation = getOrCreateConversation({
+      const result = await processInboundChannelMessage({
         channel,
-        userId: parsed.message.userId,
-        threadKey: parsed.message.threadKey
-      });
-      recordMetricEvent({
-        type: "message_sent",
-        agentId: channel.agentId,
-        channelId: channel.id,
-        conversationId: conversation.id,
-        timestamp: new Date().toISOString(),
-        metadata: {
-          role: "user"
-        }
-      });
-      const { response, prompt } = await runChatFlow({
-        agentId: channel.agentId,
-        message: parsed.message.message
-      });
-      recordMetricEvent({
-        type: "message_sent",
-        agentId: channel.agentId,
-        channelId: channel.id,
-        conversationId: conversation.id,
-        timestamp: new Date().toISOString(),
-        metadata: {
-          role: "assistant",
-          sourceCount: response.sources.length
-        }
-      });
-      const escalation = maybeDispatchAutoEscalation({
-        agentId: channel.agentId,
-        message: parsed.message.message,
-        response,
-        channel,
-        conversation
+        inbound: parsed.message
       });
       return reply.send({
         channelId: channel.id,
-        conversationId: conversation.id,
-        reply: escalation ? { ...response, escalation } : response,
-        prompt,
-        metadata: parsed.message.metadata
+        conversationId: result.conversation.id,
+        reply: result.reply,
+        prompt: result.prompt,
+        metadata: result.metadata
       });
     } catch (error) {
       if (isTypedError(error)) {
@@ -3795,6 +4704,536 @@ export const buildServer = async (options?: BuildServerOptions) => {
         });
       }
       throw error;
+    }
+  });
+
+  fastify.post("/channels/:id/twilio/voice", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const querySchema = z.object({ prompt: z.string().min(1).optional() }).passthrough();
+    const { id } = paramsSchema.parse(request.params);
+    const query = querySchema.parse(request.query);
+    const channel = channels.get(id);
+    if (!channel) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+    if (channel.type !== "voice_agent") {
+      return reply.code(400).send({ error: "twilio_voice_channel_required" });
+    }
+    if (!channel.enabled) {
+      return reply.code(403).send({ error: "channel_disabled" });
+    }
+    const twilioSettings = resolveTwilioChannelSettings(channel);
+    if (twilioSettings.validateSignature && !twilioSettings.authToken) {
+      return reply.code(400).send({ error: "twilio_auth_token_required" });
+    }
+    const payload = isRecord(request.body) ? request.body : {};
+    const requestUrl = buildExternalUrl({
+      routePath: request.raw.url ?? `/channels/${channel.id}/twilio/voice`,
+      headers: request.headers,
+      fallbackProtocol: request.protocol,
+      configuredBaseUrl: twilioSettings.webhookBaseUrl
+    });
+    if (!requestUrl) {
+      return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+    }
+    const signature = getHeaderString(request.headers["x-twilio-signature"]);
+    const validRequest = validateTwilioWebhookRequest({
+      settings: twilioSettings,
+      signature,
+      requestUrl,
+      body: payload
+    });
+    if (!validRequest) {
+      return reply.code(401).send({ error: "twilio_signature_invalid" });
+    }
+    const initialPrompt = query.prompt?.trim() || twilioSettings.initialPrompt;
+    if (twilioSettings.realtimeEnabled) {
+      if (!azureOpenAIRealtimeConfig) {
+        return reply.code(400).send({ error: "twilio_realtime_not_configured" });
+      }
+      const realtimeStreamUrl = buildExternalUrl({
+        routePath: `/channels/${channel.id}/twilio/realtime/stream`,
+        headers: request.headers,
+        fallbackProtocol: request.protocol,
+        configuredBaseUrl: twilioSettings.webhookBaseUrl
+      });
+      if (!realtimeStreamUrl) {
+        return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+      }
+      const streamUrl = new URL(realtimeStreamUrl);
+      streamUrl.protocol = streamUrl.protocol === "http:" ? "ws:" : "wss:";
+      const token = issueTwilioRealtimeStreamToken({
+        tokens: twilioRealtimeStreamTokens,
+        channelId: channel.id
+      });
+      streamUrl.searchParams.set("token", token);
+      const realtimeTwiml = createTwimlRealtimeStreamResponse({
+        streamUrl: streamUrl.toString(),
+        prompt: initialPrompt,
+        language: twilioSettings.language,
+        voice: twilioSettings.voice
+      });
+      reply.header("content-type", "text/xml; charset=utf-8");
+      return reply.send(realtimeTwiml);
+    }
+    const turnUrl = buildExternalUrl({
+      routePath: `/channels/${channel.id}/twilio/turn`,
+      headers: request.headers,
+      fallbackProtocol: request.protocol,
+      configuredBaseUrl: twilioSettings.webhookBaseUrl
+    });
+    if (!turnUrl) {
+      return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+    }
+    const twiml = createTwimlGatherResponse({
+      prompt: initialPrompt,
+      actionUrl: turnUrl,
+      language: twilioSettings.language,
+      voice: twilioSettings.voice
+    });
+    reply.header("content-type", "text/xml; charset=utf-8");
+    return reply.send(twiml);
+  });
+
+  fastify.get(
+    "/channels/:id/twilio/realtime/stream",
+    { websocket: true },
+    (connection, request) => {
+      const paramsSchema = z.object({ id: z.string().min(1) });
+      const querySchema = z.object({ token: z.string().min(1) });
+      const closeSocket = (code: number, reason: string) => {
+        try {
+          connection.socket.close(code, reason);
+        } catch {
+          // no-op
+        }
+      };
+
+      let channelId: string;
+      let token: string;
+      try {
+        const params = paramsSchema.parse(request.params);
+        const query = querySchema.parse(request.query);
+        channelId = params.id;
+        token = query.token;
+      } catch {
+        closeSocket(1008, "invalid_request");
+        return;
+      }
+
+      const channel = channels.get(channelId);
+      if (!channel || channel.type !== "voice_agent" || !channel.enabled) {
+        closeSocket(1008, "channel_unavailable");
+        return;
+      }
+      const twilioSettings = resolveTwilioChannelSettings(channel);
+      if (!twilioSettings.realtimeEnabled) {
+        closeSocket(1008, "twilio_realtime_disabled");
+        return;
+      }
+      if (!azureOpenAIRealtimeConfig) {
+        closeSocket(1011, "realtime_not_configured");
+        return;
+      }
+      const isTokenValid = consumeTwilioRealtimeStreamToken({
+        tokens: twilioRealtimeStreamTokens,
+        token,
+        channelId
+      });
+      if (!isTokenValid) {
+        closeSocket(1008, "invalid_stream_token");
+        return;
+      }
+
+      const agent = agents.get(channel.agentId);
+      const realtimeInstructions =
+        twilioSettings.realtimeInstructions ??
+        getTrimmedValue(agent?.basePrompt) ??
+        azureOpenAIRealtimeConfig.instructions ??
+        "You are a helpful support voice assistant for a Norwegian business. Keep answers concise and practical.";
+      const realtimeVoice =
+        twilioSettings.realtimeVoice ?? azureOpenAIRealtimeConfig.voice;
+
+      let streamSid: string | undefined;
+      let realtimeSocket: OpenAIRealtimeWS | undefined;
+      let realtimeReady = false;
+      let closed = false;
+      const pendingAudioFrames: string[] = [];
+
+      const sendRealtimeAudioFrame = (audioPayload: string) => {
+        if (!realtimeSocket || !realtimeReady) {
+          pendingAudioFrames.push(audioPayload);
+          if (pendingAudioFrames.length > 1200) {
+            pendingAudioFrames.shift();
+          }
+          return;
+        }
+        realtimeSocket.send({
+          type: "input_audio_buffer.append",
+          audio: audioPayload
+        });
+      };
+
+      const sendToTwilio = (payload: Record<string, unknown>) => {
+        if (closed || connection.socket.readyState !== 1) {
+          return;
+        }
+        connection.socket.send(JSON.stringify(payload));
+      };
+
+      const shutdown = (input: {
+        reason: string;
+        twilioCode?: number;
+        closeTwilioSocket?: boolean;
+      }) => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        if (realtimeSocket) {
+          realtimeSocket.close({
+            code: 1000,
+            reason: input.reason
+          });
+        }
+        if (input.closeTwilioSocket !== false && connection.socket.readyState < 2) {
+          closeSocket(input.twilioCode ?? 1000, input.reason);
+        }
+      };
+
+      connection.socket.on("message", (rawMessage: unknown) => {
+        if (closed) {
+          return;
+        }
+        const rawText =
+          typeof rawMessage === "string"
+            ? rawMessage
+            : Buffer.isBuffer(rawMessage)
+              ? rawMessage.toString("utf8")
+              : rawMessage instanceof ArrayBuffer
+                ? Buffer.from(rawMessage).toString("utf8")
+                : Array.isArray(rawMessage)
+                  ? Buffer.concat(rawMessage).toString("utf8")
+                  : "";
+        if (!rawText) {
+          return;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(rawText);
+        } catch {
+          return;
+        }
+        if (!isRecord(parsed)) {
+          return;
+        }
+        const eventType = getString(parsed.event);
+        if (!eventType) {
+          return;
+        }
+        if (eventType === "start") {
+          const start = getRecord(parsed.start);
+          streamSid = getString(start?.streamSid);
+          return;
+        }
+        if (eventType === "media") {
+          const media = getRecord(parsed.media);
+          const audioPayload = getString(media?.payload);
+          if (!audioPayload) {
+            return;
+          }
+          sendRealtimeAudioFrame(audioPayload);
+          return;
+        }
+        if (eventType === "stop") {
+          shutdown({ reason: "twilio_stream_stopped", closeTwilioSocket: false });
+        }
+      });
+
+      connection.socket.on("close", () => {
+        shutdown({ reason: "twilio_stream_closed", closeTwilioSocket: false });
+      });
+
+      connection.socket.on("error", (error: unknown) => {
+        fastify.log.error(
+          {
+            err: error,
+            channelId
+          },
+          "twilio media stream socket error"
+        );
+        shutdown({ reason: "twilio_stream_error", closeTwilioSocket: false });
+      });
+
+      void (async () => {
+        try {
+          realtimeSocket = await createAzureOpenAIRealtimeSocket(azureOpenAIRealtimeConfig);
+          realtimeSocket.on("response.output_audio.delta", (event) => {
+            if (!streamSid || !event.delta) {
+              return;
+            }
+            sendToTwilio({
+              event: "media",
+              streamSid,
+              media: {
+                payload: event.delta
+              }
+            });
+          });
+          realtimeSocket.on("input_audio_buffer.speech_started", () => {
+            if (!streamSid) {
+              return;
+            }
+            sendToTwilio({
+              event: "clear",
+              streamSid
+            });
+          });
+          realtimeSocket.on("error", (error) => {
+            fastify.log.error(
+              {
+                err: error,
+                channelId
+              },
+              "azure realtime websocket error"
+            );
+            shutdown({ reason: "realtime_error", twilioCode: 1011 });
+          });
+
+          realtimeSocket.send({
+            type: "session.update",
+            session: {
+              type: "realtime",
+              instructions: realtimeInstructions,
+              output_modalities: ["audio"],
+              audio: {
+                input: {
+                  format: { type: "audio/pcmu" },
+                  turn_detection: {
+                    type: "server_vad",
+                    create_response: true,
+                    interrupt_response: true
+                  }
+                },
+                output: {
+                  format: { type: "audio/pcmu" },
+                  voice: realtimeVoice
+                }
+              },
+              max_output_tokens: azureOpenAIRealtimeConfig.maxOutputTokens
+            }
+          });
+          realtimeReady = true;
+          for (const frame of pendingAudioFrames) {
+            sendRealtimeAudioFrame(frame);
+          }
+          pendingAudioFrames.length = 0;
+        } catch (error) {
+          fastify.log.error(
+            {
+              err: error,
+              channelId
+            },
+            "failed to initialize azure realtime stream"
+          );
+          shutdown({ reason: "realtime_connection_failed", twilioCode: 1011 });
+        }
+      })();
+    }
+  );
+
+  fastify.post("/channels/:id/twilio/turn", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const { id } = paramsSchema.parse(request.params);
+    const channel = channels.get(id);
+    if (!channel) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+    if (channel.type !== "voice_agent") {
+      return reply.code(400).send({ error: "twilio_voice_channel_required" });
+    }
+    if (!channel.enabled) {
+      return reply.code(403).send({ error: "channel_disabled" });
+    }
+    const twilioSettings = resolveTwilioChannelSettings(channel);
+    if (twilioSettings.validateSignature && !twilioSettings.authToken) {
+      return reply.code(400).send({ error: "twilio_auth_token_required" });
+    }
+    const payload = isRecord(request.body) ? request.body : {};
+    const requestUrl = buildExternalUrl({
+      routePath: request.raw.url ?? `/channels/${channel.id}/twilio/turn`,
+      headers: request.headers,
+      fallbackProtocol: request.protocol,
+      configuredBaseUrl: twilioSettings.webhookBaseUrl
+    });
+    if (!requestUrl) {
+      return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+    }
+    const signature = getHeaderString(request.headers["x-twilio-signature"]);
+    const validRequest = validateTwilioWebhookRequest({
+      settings: twilioSettings,
+      signature,
+      requestUrl,
+      body: payload
+    });
+    if (!validRequest) {
+      return reply.code(401).send({ error: "twilio_signature_invalid" });
+    }
+    const turnUrl = buildExternalUrl({
+      routePath: `/channels/${channel.id}/twilio/turn`,
+      headers: request.headers,
+      fallbackProtocol: request.protocol,
+      configuredBaseUrl: twilioSettings.webhookBaseUrl
+    });
+    if (!turnUrl) {
+      return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+    }
+    const transcript = pickFirstString(
+      payload.SpeechResult,
+      payload.TranscriptionText,
+      payload.transcript,
+      payload.text
+    );
+    if (!transcript) {
+      const repromptTwiml = createTwimlGatherResponse({
+        prompt: "Beklager, jeg fikk ikke med meg svaret ditt.",
+        actionUrl: turnUrl,
+        language: twilioSettings.language,
+        voice: twilioSettings.voice
+      });
+      reply.header("content-type", "text/xml; charset=utf-8");
+      return reply.send(repromptTwiml);
+    }
+    const inboundMessage: InboundMessage = {
+      message: transcript,
+      userId: pickFirstString(payload.From, payload.Caller),
+      threadKey: pickFirstString(payload.CallSid, payload.SessionSid),
+      metadata: {
+        provider: "twilio",
+        callSid: pickFirstString(payload.CallSid),
+        accountSid: pickFirstString(payload.AccountSid),
+        from: pickFirstString(payload.From),
+        to: pickFirstString(payload.To),
+        speechConfidence: pickFirstString(payload.Confidence)
+      }
+    };
+    try {
+      const result = await processInboundChannelMessage({
+        channel,
+        inbound: inboundMessage
+      });
+      const replyRecord = getRecord(result.reply);
+      const speechRecord = getRecord(replyRecord?.["speech"]);
+      const speechText = pickFirstString(
+        speechRecord?.["text"],
+        replyRecord?.["message"],
+        twilioSettings.reprompt
+      );
+      const followupPrompt = `${speechText ?? twilioSettings.reprompt} ${twilioSettings.reprompt}`.trim();
+      const twiml = createTwimlGatherResponse({
+        prompt: followupPrompt,
+        actionUrl: turnUrl,
+        language: twilioSettings.language,
+        voice: twilioSettings.voice
+      });
+      reply.header("content-type", "text/xml; charset=utf-8");
+      return reply.send(twiml);
+    } catch (error) {
+      if (isTypedError(error)) {
+        const serialized = serializeTypedError(error);
+        return reply.code(serialized.statusCode).send({
+          error: serialized.error,
+          ...(serialized.details ? { details: serialized.details } : {})
+        });
+      }
+      throw error;
+    }
+  });
+
+  fastify.post("/channels/:id/twilio/calls", async (request, reply) => {
+    const paramsSchema = z.object({ id: z.string().min(1) });
+    const payloadSchema = z.object({
+      to: z.string().min(3),
+      from: z.string().min(3).optional(),
+      webhookBaseUrl: z.string().url().optional(),
+      initialPrompt: z.string().min(1).max(300).optional()
+    });
+    const { id } = paramsSchema.parse(request.params);
+    const payload = payloadSchema.parse(request.body);
+    const channel = channels.get(id);
+    if (!channel) {
+      return reply.code(404).send({ error: "channel_not_found" });
+    }
+    if (channel.type !== "voice_agent") {
+      return reply.code(400).send({ error: "twilio_voice_channel_required" });
+    }
+    if (!channel.enabled) {
+      return reply.code(403).send({ error: "channel_disabled" });
+    }
+    const tenantId = getTenantIdForAgent(channel.agentId);
+    if (!tenantId) {
+      return reply.code(404).send({ error: "tenant_not_found" });
+    }
+    const access = requireTenantRole(request, reply, tenantId, "member");
+    if (!access) {
+      return;
+    }
+    const twilioSettings = resolveTwilioChannelSettings(channel);
+    const accountSid = twilioSettings.accountSid;
+    if (!accountSid) {
+      return reply.code(400).send({ error: "twilio_account_sid_required" });
+    }
+    if (
+      !twilioSettings.authToken &&
+      !(twilioSettings.apiKeySid && twilioSettings.apiKeySecret)
+    ) {
+      return reply.code(400).send({ error: "twilio_credentials_missing" });
+    }
+    const from = payload.from ?? twilioSettings.fromNumber;
+    if (!from) {
+      return reply.code(400).send({ error: "twilio_from_number_required" });
+    }
+    const voiceUrl = buildExternalUrl({
+      routePath: `/channels/${channel.id}/twilio/voice`,
+      headers: request.headers,
+      fallbackProtocol: request.protocol,
+      configuredBaseUrl: payload.webhookBaseUrl ?? twilioSettings.webhookBaseUrl
+    });
+    if (!voiceUrl) {
+      return reply.code(400).send({ error: "twilio_webhook_base_url_required" });
+    }
+    const url = new URL(voiceUrl);
+    if (payload.initialPrompt) {
+      url.searchParams.set("prompt", payload.initialPrompt);
+    }
+    try {
+      const call = await twilioCallCreator({
+        accountSid,
+        authToken: twilioSettings.authToken,
+        apiKeySid: twilioSettings.apiKeySid,
+        apiKeySecret: twilioSettings.apiKeySecret,
+        to: payload.to,
+        from,
+        url: url.toString()
+      });
+      return reply.code(201).send({
+        call: {
+          sid: call.sid,
+          status: call.status,
+          to: call.to ?? payload.to,
+          from: call.from ?? from,
+          url: url.toString()
+        }
+      });
+    } catch (error) {
+      fastify.log.error(
+        {
+          err: error,
+          channelId: channel.id
+        },
+        "twilio outbound call failed"
+      );
+      return reply.code(502).send({ error: "twilio_call_failed" });
     }
   });
 
@@ -5113,6 +6552,10 @@ export const buildServer = async (options?: BuildServerOptions) => {
         channel,
         conversation
       });
+      const responsePayload =
+        channel && channel.type === "voice_agent"
+          ? buildVoiceReplyPayload(response, channel)
+          : response;
 
       if (data.stream) {
         reply.raw.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -5125,8 +6568,8 @@ export const buildServer = async (options?: BuildServerOptions) => {
           reply.raw.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
         }
         const streamedResponse = escalation
-          ? { ...response, escalation }
-          : response;
+          ? { ...responsePayload, escalation }
+          : responsePayload;
         reply.raw.write(
           `data: ${JSON.stringify({
             done: true,
@@ -5139,7 +6582,7 @@ export const buildServer = async (options?: BuildServerOptions) => {
       }
 
       return reply.send({
-        ...response,
+        ...responsePayload,
         ...(escalation ? { escalation } : {}),
         prompt,
         conversationId: conversation?.id

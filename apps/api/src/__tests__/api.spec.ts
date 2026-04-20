@@ -11,13 +11,64 @@ describe("api routes", () => {
   let server: FastifyInstance;
   let vectorStoreDir: string;
   let runtimeStoreDir: string;
+  const modelProviderEnvKeys = [
+    "MODEL_PROVIDER",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION",
+    "AZURE_OPENAI_MODEL",
+    "AZURE_OPENAI_TEMPERATURE",
+    "AZURE_OPENAI_MAX_TOKENS",
+    "AZURE_OPENAI_REALTIME_DEPLOYMENT",
+    "AZURE_OPENAI_REALTIME_VOICE",
+    "AZURE_OPENAI_REALTIME_INSTRUCTIONS",
+    "AZURE_OPENAI_REALTIME_TEMPERATURE",
+    "AZURE_OPENAI_REALTIME_MAX_OUTPUT_TOKENS",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_API_KEY_SID",
+    "TWILIO_API_KEY_SECRET",
+    "TWILIO_FROM_NUMBER",
+    "TWILIO_WEBHOOK_BASE_URL",
+    "TWILIO_VALIDATE_SIGNATURE",
+    "TWILIO_REALTIME_ENABLED",
+    "TWILIO_REALTIME_VOICE",
+    "TWILIO_REALTIME_INSTRUCTIONS"
+  ] as const;
+  const originalModelProviderEnv: Partial<
+    Record<(typeof modelProviderEnvKeys)[number], string | undefined>
+  > = {};
+  const capturedTwilioCalls: Array<{
+    accountSid: string;
+    authToken?: string;
+    apiKeySid?: string;
+    apiKeySecret?: string;
+    to: string;
+    from: string;
+    url: string;
+  }> = [];
 
   beforeAll(async () => {
+    for (const key of modelProviderEnvKeys) {
+      originalModelProviderEnv[key] = process.env[key];
+      delete process.env[key];
+    }
     vectorStoreDir = await mkdtemp(path.join(tmpdir(), "vector-store-"));
     runtimeStoreDir = await mkdtemp(path.join(tmpdir(), "runtime-store-"));
     process.env.VECTOR_STORE_DIR = vectorStoreDir;
     process.env.RUNTIME_STORE_DIR = runtimeStoreDir;
-    server = await buildServer();
+    server = await buildServer({
+      twilioCallCreator: async (input) => {
+        capturedTwilioCalls.push({ ...input });
+        return {
+          sid: `CA_mock_${capturedTwilioCalls.length}`,
+          status: "queued",
+          to: input.to,
+          from: input.from
+        };
+      }
+    });
     await server.ready();
   });
 
@@ -31,6 +82,14 @@ describe("api routes", () => {
     }
     delete process.env.VECTOR_STORE_DIR;
     delete process.env.RUNTIME_STORE_DIR;
+    for (const key of modelProviderEnvKeys) {
+      const value = originalModelProviderEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+        continue;
+      }
+      process.env[key] = value;
+    }
   });
 
   const authHeaders = (userId = "user_admin") => ({
@@ -2379,6 +2438,216 @@ describe("api routes", () => {
     expect(wordpressWebhookResponse.json().reply.message).toContain(
       "Support is available 24/7 via chat."
     );
+  });
+
+  it("handles voice webhooks and returns speech-ready payloads", async () => {
+    const { agent } = await seedAgentWithText(
+      "Voice Workspace",
+      "Support lines are open weekdays from 08:00 to 16:00."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "voice_agent",
+        config: {
+          authToken: "voice_secret",
+          voiceLocale: "nb-NO",
+          voiceName: "nb-NO-Standard-A",
+          speakingRate: 0.95
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const invalidWebhookResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        sessionId: "call_001"
+      }
+    });
+    expect(invalidWebhookResponse.statusCode).toBe(400);
+    expect(invalidWebhookResponse.json().error).toBe("voice_transcript_missing");
+
+    const firstVoiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        transcript: "When can I call support?",
+        sessionId: "call_001",
+        caller: {
+          phone: "+4799999999"
+        },
+        metadata: {
+          provider: "test_dialer"
+        }
+      }
+    });
+    expect(firstVoiceResponse.statusCode).toBe(200);
+    const firstBody = firstVoiceResponse.json();
+    expect(firstBody.reply.message).toContain("08:00 to 16:00");
+    expect(firstBody.reply.speech.text).toBe(firstBody.reply.message);
+    expect(firstBody.reply.speech.ssml).toContain("<speak");
+    expect(firstBody.reply.speech.voice.locale).toBe("nb-NO");
+    expect(firstBody.reply.speech.voice.name).toBe("nb-NO-Standard-A");
+    expect(firstBody.reply.speech.voice.speakingRate).toBe(0.95);
+    expect(firstBody.metadata.transcript).toBe("When can I call support?");
+    expect(firstBody.metadata.provider).toBe("test_dialer");
+
+    const secondVoiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/webhook`,
+      headers: {
+        authorization: "Bearer voice_secret"
+      },
+      payload: {
+        transcript: "Please repeat your opening hours.",
+        sessionId: "call_001"
+      }
+    });
+    expect(secondVoiceResponse.statusCode).toBe(200);
+    expect(secondVoiceResponse.json().conversationId).toBe(firstBody.conversationId);
+  });
+
+  it("handles Twilio voice gather/turn endpoints for voice channels", async () => {
+    const { agent } = await seedAgentWithText(
+      "Twilio Voice Workspace",
+      "Support is available weekdays from 08:00 to 16:00."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "voice_agent",
+        config: {
+          authToken: "voice_connector_secret",
+          twilioValidateSignature: false,
+          twilioWebhookBaseUrl: "https://voice.example.no",
+          twilioInitialPrompt: "Hei! Hva trenger du hjelp med?",
+          twilioReprompt: "Vil du ha hjelp med noe mer?",
+          twilioLanguage: "nb-NO"
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const voiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/twilio/voice`,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      payload: "CallSid=CA_1&From=%2B4799999999"
+    });
+    expect(voiceResponse.statusCode).toBe(200);
+    expect(voiceResponse.headers["content-type"]).toContain("text/xml");
+    expect(voiceResponse.body).toContain("<Gather");
+    expect(voiceResponse.body).toContain(`/channels/${channel.id}/twilio/turn`);
+
+    const turnResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/twilio/turn`,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      payload:
+        "SpeechResult=When+can+I+call+support%3F&CallSid=CA_1&From=%2B4799999999"
+    });
+    expect(turnResponse.statusCode).toBe(200);
+    expect(turnResponse.headers["content-type"]).toContain("text/xml");
+    expect(turnResponse.body).toContain("<Gather");
+    expect(turnResponse.body).toContain("08:00 to 16:00");
+  });
+
+  it("returns configuration error when Twilio realtime mode is enabled without Azure realtime config", async () => {
+    const { agent } = await seedAgentWithText(
+      "Twilio Realtime Workspace",
+      "Support can help with account and billing."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "voice_agent",
+        config: {
+          authToken: "voice_connector_secret",
+          twilioValidateSignature: false,
+          twilioWebhookBaseUrl: "https://voice.example.no",
+          twilioRealtimeEnabled: true
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const voiceResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/twilio/voice`,
+      headers: {
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      payload: "CallSid=CA_realtime_1&From=%2B4799999999"
+    });
+    expect(voiceResponse.statusCode).toBe(400);
+    expect(voiceResponse.json().error).toBe("twilio_realtime_not_configured");
+  });
+
+  it("creates outbound Twilio calls when voice channel config is present", async () => {
+    const { agent } = await seedAgentWithText(
+      "Twilio Outbound Workspace",
+      "Outbound voice follow-up is available."
+    );
+
+    const channelResponse = await adminInject({
+      method: "POST",
+      url: "/channels",
+      payload: {
+        agentId: agent.id,
+        type: "voice_agent",
+        config: {
+          authToken: "voice_connector_secret",
+          twilioAccountSid: "AC1234567890abcdef1234567890abcd",
+          twilioApiKeySid: "SK1234567890abcdef1234567890abcd",
+          twilioApiKeySecret: "secret_1234567890abcdef1234567890abcd",
+          twilioFromNumber: "+4722334455",
+          twilioWebhookBaseUrl: "https://voice.example.no"
+        }
+      }
+    });
+    expect(channelResponse.statusCode).toBe(201);
+    const channel = channelResponse.json();
+
+    const callsBefore = capturedTwilioCalls.length;
+    const callResponse = await adminInject({
+      method: "POST",
+      url: `/channels/${channel.id}/twilio/calls`,
+      payload: {
+        to: "+4799988877",
+        initialPrompt: "Hei! Dette er en oppfolging fra support."
+      }
+    });
+    expect(callResponse.statusCode).toBe(201);
+    const callBody = callResponse.json();
+    expect(callBody.call.sid).toMatch(/^CA_mock_/u);
+    expect(callBody.call.to).toBe("+4799988877");
+    expect(callBody.call.from).toBe("+4722334455");
+    expect(callBody.call.url).toContain(`/channels/${channel.id}/twilio/voice`);
+    expect(capturedTwilioCalls.length).toBe(callsBefore + 1);
   });
 
   it("auto-creates a CRM ticket for low-confidence webhook chats and avoids duplicate dispatch", async () => {

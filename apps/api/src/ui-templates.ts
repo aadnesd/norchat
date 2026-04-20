@@ -8,14 +8,10 @@ export const buildWidgetScript = () => `
       return;
     }
 
-    var fontLinkId = "ralph-widget-fonts";
-    if (!document.getElementById(fontLinkId)) {
-      var fontLink = document.createElement("link");
-      fontLink.id = fontLinkId;
-      fontLink.rel = "stylesheet";
-      fontLink.href = "https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,500;1,400&family=Host+Grotesk:wght@400;500;600&display=swap";
-      document.head.appendChild(fontLink);
-    }
+    // Use a system font stack only. The widget runs inside third-party pages
+    // whose Content-Security-Policy may forbid loading external stylesheets
+    // (e.g. fonts.googleapis.com). Injecting a <link> there generates CSP
+    // violations and console noise for customers, so we rely on native fonts.
 
     var style = document.createElement("style");
     style.textContent =
@@ -33,7 +29,7 @@ export const buildWidgetScript = () => `
         "--rw-hair:oklch(90% 0.006 95);" +
         "--rw-inverse:oklch(22% 0.012 150);" +
         "position:fixed;bottom:24px;right:24px;z-index:2147483647;" +
-        "font-family:'Host Grotesk',ui-sans-serif,system-ui,-apple-system,Helvetica,Arial,sans-serif;" +
+        "font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;" +
         "color:var(--rw-ink);" +
       "}" +
       "#" + rootId + " *{box-sizing:border-box;}" +
@@ -71,7 +67,7 @@ export const buildWidgetScript = () => `
         "content:'';width:12px;height:1px;background:var(--rw-accent);" +
       "}" +
       "#" + rootId + " .rw-header-title{" +
-        "font-family:'STIX Two Text','Iowan Old Style',Palatino,Georgia,serif;" +
+        "font-family:ui-serif,'Iowan Old Style',Palatino,Georgia,serif;" +
         "font-size:17px;font-weight:500;letter-spacing:-0.01em;color:var(--rw-ink);line-height:1.2;" +
       "}" +
       "#" + rootId + " .rw-header-title em{font-style:italic;color:var(--rw-accent);}" +
@@ -91,7 +87,7 @@ export const buildWidgetScript = () => `
         "padding:4px 0;" +
       "}" +
       "#" + rootId + " .rw-empty em{" +
-        "font-family:'STIX Two Text',Georgia,serif;font-style:italic;color:var(--rw-accent);" +
+        "font-family:ui-serif,Georgia,serif;font-style:italic;color:var(--rw-accent);" +
       "}" +
       "#" + rootId + " .rw-message{" +
         "padding:10px 12px;border-radius:4px;max-width:85%;" +

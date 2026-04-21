@@ -130,7 +130,7 @@ test.describe("onboarding api-backed flow", () => {
     await continueButton.click();
     await expect(page.getByText("Step 4 of 4")).toBeVisible();
     await expect(
-      page.locator("#onboarding").getByRole("heading", { name: "Deploy a web widget" })
+      page.locator("#onboarding").getByRole("heading", { name: "Deploy a channel" })
     ).toBeVisible();
 
     const [channelCreateResponse] = await Promise.all([

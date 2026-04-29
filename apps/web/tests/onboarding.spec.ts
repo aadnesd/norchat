@@ -46,7 +46,7 @@ test.describe("onboarding api-backed flow", () => {
 
     await expect(
       page.getByRole("heading", {
-        name: "Build an AI support agent that resolves more conversations, faster."
+        name: /Build an AI support agent that your team can/i
       })
     ).toBeVisible();
     await expect(

@@ -8,7 +8,8 @@ const buttonVariants = cva(
     "inline-flex items-center justify-center gap-2 whitespace-nowrap",
     "rounded-[var(--radius-md)] text-[var(--type-body-sm)] font-medium",
     "font-[var(--font-body)]",
-    "transition-colors duration-fast ease-standard",
+    "transition-colors transition-transform duration-base ease-standard",
+    "hover:-translate-y-px active:translate-y-px active:scale-[0.985]",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-paper)]",
     "disabled:pointer-events-none disabled:opacity-50"
   ].join(" "),

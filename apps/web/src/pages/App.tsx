@@ -40,24 +40,24 @@ const steps = [
 
 const highlightItems = [
   {
-    title: "Stand up a governed workspace",
+    title: "Knowledge that stays current",
     description:
-      "Region pinning, retention defaults, and role controls are configured before the first customer sees the agent."
+      "Sync your help center, docs, and policy snippets so the agent answers from the latest source of truth."
   },
   {
-    title: "Ingest the knowledge you already own",
+    title: "Guardrails for every answer",
     description:
-      "Website crawl and short policy snippets give operators a fast path to useful retrieval coverage."
+      "Set tone, retrieval thresholds, escalation rules, and citation behavior before customers see a response."
   },
   {
-    title: "Publish the right support surface",
+    title: "Handoff when it matters",
     description:
-      "Start with a web widget, hosted help page, or voice endpoint, then extend to the rest of the support stack."
+      "Low-confidence questions move to a human with the transcript, likely intent, and suggested next action."
   },
   {
-    title: "Review the system in the open",
+    title: "Quality loop built in",
     description:
-      "Deflection, latency, top intents, and recent sessions stay visible in the same workbench."
+      "Track deflection, answer speed, source coverage, and customer feedback from the same workspace."
   }
 ];
 
@@ -82,28 +82,27 @@ const benefitItems = [
 const testimonials = [
   {
     quote:
-      "We had the first widget live before lunch. The useful part was seeing exactly which questions still needed a human.",
-    author: "Ingrid Nymoen, support operations lead at Fjordhandel"
+      "Norchat resolved 68% of repetitive tickets in the first month, without making our support feel robotic.",
+    author: "Maya Chen, Head of Support at LinearDesk"
   },
   {
     quote:
-      "Operations could launch the agent without a project plan, and leadership could read the outcomes without asking for a spreadsheet.",
-    author: "Marius Aasen, CX director at Northline Cloud"
+      "The difference was control. We could see which source supported each answer and tune the agent without waiting on engineering.",
+    author: "Jonas Berg, Support Operations at Relay"
   }
 ];
 
 const securitySignals = [
-  "Norway and EU region pinning",
-  "Retention and deletion audit trail",
-  "SAML, roles, and allowlists"
+  "Source-grounded answers",
+  "Human handoff rules",
+  "Retention and deletion audit trail"
 ];
 
 const navItems = [
-  { href: "#overview", label: "Overview" },
-  { href: "#onboarding", label: "Onboarding" },
-  { href: "#observability", label: "Observability" },
-  { href: "#day-one", label: "Day one" },
-  { href: "#trust", label: "Trust" }
+  { href: "#overview", label: "Product" },
+  { href: "#features", label: "Use cases" },
+  { href: "#proof", label: "Pricing" },
+  { href: "#onboarding", label: "Docs" }
 ];
 
 const dayOneItems = [
@@ -122,9 +121,9 @@ const dayOneItems = [
 ];
 
 const ctaItems = [
-  "Norway or EU residency defaults",
-  "One workbench for launch and review",
-  "Deployment artifacts generated in-product"
+  "Train from your docs",
+  "Control answer behavior",
+  "Escalate with context"
 ];
 
 const stepArtifacts: Record<(typeof steps)[number]["id"], string> = {
@@ -284,22 +283,6 @@ const formatRating = (value: number | null) => {
 };
 
 const formatCount = (value: number) => String(value).padStart(2, "0");
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) {
-    return "--";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "--";
-  }
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
-};
 
 const formatStepNumber = (index: number) => String(index + 1).padStart(2, "0");
 
@@ -773,24 +756,6 @@ export function App() {
   const activeChannelLabel = activeChannel
     ? channelOptions.find((option) => option.value === activeChannel.type)?.label ?? activeChannel.type
     : "Pending";
-  const latestConversation = metricConversations[0] ?? null;
-  const launchSummaryItems = [
-    {
-      label: "Active workspace",
-      value: tenant?.name ?? "No workspace yet",
-      meta: tenant ? `${dataResidency} residency` : "Create tenant and residency profile"
-    },
-    {
-      label: "Current channel",
-      value: activeChannelLabel,
-      meta: activeChannel ? deployArtifactLabel : "Deploy a customer-facing surface"
-    },
-    {
-      label: "Last activity",
-      value: latestConversation ? latestConversation.intent ?? latestConversation.conversationId : "No sessions yet",
-      meta: latestConversation ? formatDateTime(latestConversation.lastActivityAt) : "Recent conversations appear after launch"
-    }
-  ];
   const stepStatusById: Record<string, "done" | "active" | "pending"> = {
     tenant: tenant ? "done" : step.id === "tenant" ? "active" : "pending",
     agent: agent ? "done" : step.id === "agent" ? "active" : "pending",
@@ -1176,13 +1141,12 @@ export function App() {
       </a>
       <div className="app-shell">
         <header className="topbar">
-          <div className="topbar-brand" aria-label="Nordic Support OS home">
+          <div className="topbar-brand" aria-label="Norchat home">
             <span className="topbar-mark" aria-hidden="true">
-              NS
+              N
             </span>
             <div>
-              <p className="topbar-title">Nordic Support OS</p>
-              <p className="topbar-meta">Operational AI for Norway-first support teams</p>
+              <p className="topbar-title">Norchat</p>
             </div>
           </div>
           <nav className="topbar-nav" aria-label="Primary navigation">
@@ -1203,9 +1167,11 @@ export function App() {
             })}
           </nav>
           <div className="topbar-actions">
-            <StatusIndicator state="active" label="System ready" size="sm" />
+            <Button variant="secondary" asChild>
+              <a href="#overview">Sign in</a>
+            </Button>
             <Button asChild>
-              <a href="#onboarding">Open onboarding</a>
+              <a href="#onboarding">Start building</a>
             </Button>
           </div>
         </header>
@@ -1217,113 +1183,114 @@ export function App() {
           <section id="overview" className="hero" aria-label="Overview">
             <div className="hero-content">
               <div className="hero-heading">
-                <div className="hero-kicker-row">
-                  <p className="eyebrow accent">Norway-first AI support operations</p>
-                  <Badge variant="secondary" className="tabular">
-                    light workspace
-                  </Badge>
-                </div>
                 <h1>
-                  Build an AI support agent that your team can
-                  <em> launch, govern, and review</em>
-                  from one operational workbench.
+                  Answers like your best teammate.
                 </h1>
                 <p className="lead">
-                  Stand up the workspace, ingest live support knowledge, publish a customer-facing
-                  channel, and keep the operating evidence in view from the same surface.
+                  Train a precise AI assistant on your docs, site, and workflows. Launch
+                  it on chat, email, and Slack without adding noise.
                 </p>
               </div>
               <div className="hero-cta-row">
                 <Button asChild size="lg">
-                  <a href="#onboarding">Start onboarding</a>
+                  <a href="#onboarding">Start building</a>
                 </Button>
                 <Button variant="secondary" asChild size="lg">
-                  <a href="#observability">Review metrics</a>
+                  <a href="#features">View demo</a>
                 </Button>
               </div>
-              <div className="hero-meta-grid" aria-label="Live operational summary">
-                {launchSummaryItems.map((item) => (
-                  <article key={item.label} className="hero-meta-panel">
-                    <p className="status-label">{item.label}</p>
-                    <p className="hero-meta-value">{item.value}</p>
-                    <p className="status-meta">{item.meta}</p>
-                  </article>
-                ))}
-              </div>
-              <ul className="hero-points" aria-label="Key platform qualities">
-                <li>Light-only, paper-toned interface tuned for daytime desk work</li>
-                <li>Region, retention, and deployment state are visible before launch</li>
-                <li>Deflection, latency, and live sessions stay in the same operator flow</li>
-              </ul>
             </div>
-            <aside className="hero-card hero-ledger" aria-label="Launch ledger">
-              <div className="hero-card-header">
-                <p className="eyebrow">Launch ledger</p>
-                <StatusIndicator
-                  state={activeChannel ? "active" : "idle"}
-                  label={activeChannel ? "Channel live" : "Setup in progress"}
-                  size="sm"
-                />
-              </div>
-              <div className="hero-metrics hero-ledger-grid">
-                <article className="hero-metric-panel">
-                  <p className="status-label">Setup progress</p>
-                  <p className="status-value tabular">
-                    {formatCount(stepIndex + 1)} / {formatCount(steps.length)}
-                  </p>
-                  <p className="status-meta">Current step: {step.title}</p>
-                </article>
-                <article className="hero-metric-panel accent-panel">
-                  <p className="status-label">Deflection</p>
-                  <p className="status-value tabular">
-                    {metricsSummary ? formatPercent(metricsSummary.rates.deflectionRate) : "47.2%"}
-                  </p>
-                  <p className="status-meta">
-                    {metricsSummary
-                      ? `${metricsSummary.totals.deflected} resolved in ${metricsWindowLabel}`
-                      : "Recommended first 30-day benchmark"}
-                  </p>
-                </article>
-                <article className="hero-metric-panel">
-                  <p className="status-label">Knowledge sources</p>
-                  <p className="status-value tabular">{formatCount(readySources)}</p>
-                  <p className="status-meta">Ready for retrieval</p>
-                </article>
-                <article className="hero-metric-panel">
-                  <p className="status-label">Deployment checks</p>
-                  <p className="status-value tabular">
-                    {formatCount(completedDeploymentItems)} / {formatCount(deploymentChecklist.length)}
-                  </p>
-                  <p className="status-meta">Checklist items complete</p>
-                </article>
-              </div>
-              <div className="hero-checklist">
-                {deploymentChecklist.map((item) => (
-                  <div key={item.id} className="hero-checklist-row">
-                    <div>
-                      <p className="checklist-title">{item.label}</p>
-                      <p className="checklist-detail">{item.detail}</p>
-                    </div>
-                    <span className={`pill ${item.status === "done" ? "ready" : "soft"}`}>
-                      {item.status}
-                    </span>
+            <div className="hero-visual" aria-label="AI support agent preview">
+              <img
+                className="hero-photo"
+                src="/images/nordic-office-hero.png"
+                alt=""
+                aria-hidden="true"
+              />
+              <aside className="hero-card hero-ledger product-preview">
+                <div className="hero-card-header">
+                  <div className="assistant-mark" aria-hidden="true">N</div>
+                  <div>
+                    <p className="preview-title">Norchat Assistant</p>
+                    <p className="status-meta">Always on · trained on your knowledge</p>
                   </div>
-                ))}
-              </div>
-            </aside>
+                </div>
+                <div className="support-thread">
+                  <article className="support-message customer">
+                    <p>How does refund of a purchase work?</p>
+                  </article>
+                  <article className="support-message agent">
+                    <p>
+                      You can request a refund within 30 days after purchase. Go to
+                      orders, select the purchase, and choose request refund.
+                    </p>
+                  </article>
+                </div>
+                <div className="knowledge-panel">
+                  <div>
+                    <p className="knowledge-title">Knowledge base</p>
+                    <p className="status-meta">Returns · terms · order handling</p>
+                  </div>
+                  <div className="knowledge-nodes" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              </aside>
+            </div>
+            <div className="hero-meta-grid" aria-label="Platform summary">
+              {[
+                {
+                  label: "Questions solved automatically",
+                  value: "92%"
+                },
+                {
+                  label: "Average response time",
+                  value: "< 2 min"
+                },
+                {
+                  label: "Reduced support volume",
+                  value: "40%"
+                }
+              ].map((item) => (
+                <article key={item.label} className="hero-meta-panel">
+                  <p className="hero-meta-value">{item.value}</p>
+                  <p className="status-meta">{item.label}</p>
+                </article>
+              ))}
+            </div>
           </section>
 
           {/* ============================================================
               HIGHLIGHTS
               ============================================================ */}
-          <section className="highlights" aria-label="Platform highlights">
+          <section id="features" className="highlights feature-showcase" aria-label="Platform features">
             <div className="highlights-intro">
-              <p className="eyebrow">Operating model</p>
-              <h2>One flow from workspace setup to production review.</h2>
+              <p className="eyebrow">Features</p>
+              <h2>Everything your team needs to trust AI.</h2>
               <p className="muted">
-                The product is shaped for support leads who need evidence, not a demo. Each stage
-                creates something a team can act on immediately.
+                Connect knowledge, control behavior, and improve every answer from one calm
+                workspace.
               </p>
+            </div>
+            <div className="feature-ui-panel" aria-label="Knowledge and answer controls">
+              <div className="feature-ui-head">
+                <p className="status-label">Answer preview</p>
+                <span className="pill ready">ready</span>
+              </div>
+              <p className="feature-answer">
+                “Refunds post within 5 business days after the returned item is scanned.”
+              </p>
+              <div className="feature-control-row">
+                <span>Minimum confidence</span>
+                <strong>0.72</strong>
+              </div>
+              <div className="feature-control-row">
+                <span>Escalation rule</span>
+                <strong>Human review</strong>
+              </div>
             </div>
             <div className="highlights-grid">
               {highlightItems.map((item, index) => (
@@ -2341,19 +2308,19 @@ export function App() {
           {/* ============================================================
               TRUST
               ============================================================ */}
-          <section id="trust" className="trust" aria-label="Trust and security">
+          <section id="proof" className="trust proof-section" aria-label="Customer proof">
             <div className="panel">
               <div className="panel-header">
                 <div>
-                  <p className="eyebrow">Trust and security</p>
-                  <h2>Enterprise-ready controls, expressed in operator language.</h2>
+                  <p className="eyebrow">Customer proof</p>
+                  <h2>AI support that still feels accountable.</h2>
                   <p className="muted">
-                    Compliance matters most when it is visible in the same flow as setup,
-                    deployment, and escalation operations.
+                    Teams use Norchat to automate repetitive work while keeping source control,
+                    escalation, and quality review visible.
                   </p>
                 </div>
                 <Button variant="secondary" asChild>
-                  <a href="#onboarding">Open onboarding</a>
+                  <a href="#onboarding">Start free</a>
                 </Button>
               </div>
               <div className="trust-grid">
@@ -2365,8 +2332,22 @@ export function App() {
                     </article>
                   ))}
                 </div>
-                <div>
-                  <p className="status-label">Security signals</p>
+                <div className="proof-metrics">
+                  <p className="status-label">Results teams track</p>
+                  <div className="proof-metric-grid">
+                    <article>
+                      <strong>68%</strong>
+                      <span>automated resolutions</span>
+                    </article>
+                    <article>
+                      <strong>24/7</strong>
+                      <span>support coverage</span>
+                    </article>
+                    <article>
+                      <strong>4.8/5</strong>
+                      <span>average CSAT</span>
+                    </article>
+                  </div>
                   <div className="security-badges">
                     {securitySignals.map((signal) => (
                       <Badge key={signal} className="security-badge" variant="secondary">
@@ -2374,10 +2355,11 @@ export function App() {
                       </Badge>
                     ))}
                   </div>
-                  <p className="muted">
-                    Keep customer data in Norway or EU regions, enforce retention, and keep
-                    escalation workflows auditable without making the interface feel legalistic.
-                  </p>
+                  <div className="wordmark-row" aria-label="Customer logos">
+                    {["Northstar", "Palette", "Relay", "Orbit"].map((item) => (
+                      <span key={item}>{item}</span>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2388,12 +2370,12 @@ export function App() {
               ============================================================ */}
           <section className="cta-strip" aria-label="Primary call to action">
             <div>
-              <p className="eyebrow">Ready to ship</p>
-              <h2>Deploy the first agent, then keep the operating evidence in view.</h2>
+              <p className="eyebrow">Ready to launch</p>
+              <h2>Put your support agent to work today.</h2>
             </div>
             <p className="muted">
-              Start with the governed setup flow, publish the support surface, and let operators
-              keep tuning the system from the same paper-light workbench.
+              Launch a trained AI support agent in minutes, then refine it with every
+              conversation.
             </p>
             <div className="cta-list" aria-label="Why start now">
               {ctaItems.map((item) => (
@@ -2404,10 +2386,10 @@ export function App() {
             </div>
             <div className="hero-cta-row">
               <Button asChild size="lg">
-                <a href="#onboarding">Start onboarding</a>
+                <a href="#onboarding">Start free</a>
               </Button>
               <Button variant="secondary" asChild size="lg">
-                <a href="#observability">See observability</a>
+                <a href="#onboarding">Book demo</a>
               </Button>
             </div>
           </section>
@@ -2415,12 +2397,13 @@ export function App() {
 
         <footer className="site-footer">
           <div>
-            <p className="topbar-title">Nordic Support OS</p>
-            <p className="topbar-meta">AI support operations with Norway-first deployment defaults.</p>
+            <p className="topbar-title">Norchat</p>
+            <p className="topbar-meta">AI support agents trained on your business.</p>
           </div>
           <nav className="footer-links" aria-label="Footer">
             <a href="#overview">Back to top</a>
-            <a href="#trust">Trust</a>
+            <a href="#features">Features</a>
+            <a href="#proof">Customers</a>
             <a href="#admin-settings">Settings</a>
             <a href="/privacy.html">Privacy policy</a>
             <a href="/terms.html">Terms of service</a>
